@@ -90,6 +90,10 @@ services:
     volumes:
       - app_logs:/app/logs
       - app_cache:/home/app/.cache
+      # PaddleX builds its cache under $HOME/.paddlex at *import* time, and the
+      # root filesystem is read-only. Shared with the worker so the OCR models
+      # download once, and named so they survive a rebuild.
+      - app_paddlex:/home/app/.paddlex
       - shared_pdfs:/app/shared_files
     # The API is loopback-only behind the trusted TLS reverse proxy (see
     # SECURITY_P0_DEPLOYMENT.md), so no untrusted peer can reach this socket.
@@ -122,6 +126,9 @@ services:
     volumes:
       - app_logs:/app/logs
       - app_cache:/home/app/.cache
+      # Same PaddleX cache volume as `web`, deliberately: this is where the OCR
+      # models actually get used, and sharing it means they download once.
+      - app_paddlex:/home/app/.paddlex
       - shared_pdfs:/app/shared_files
     command: dramatiq app.queues.job_queue --processes 1 --threads ${WORKER_THREADS:-8}
     depends_on:
@@ -184,6 +191,7 @@ volumes:
   shared_pdfs:
   app_logs:
   app_cache:
+  app_paddlex:
   ollama_data:
 
 networks:

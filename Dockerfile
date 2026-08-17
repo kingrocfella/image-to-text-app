@@ -31,8 +31,16 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chown=app:app ./app ./app
-RUN mkdir -p /app/logs /app/shared_files /home/app/.cache \
-    && chown -R app:app /app/logs /app/shared_files /home/app/.cache
+# Each of these is a named-volume mount point in docker-compose.yml, and each is
+# created here on purpose: Docker seeds a new named volume from the image path it
+# covers, so a directory absent from the image yields a volume owned by root that
+# the `app` user cannot then write to.
+#
+# /home/app/.paddlex is PaddleX's cache. It constructs a TempFileManager at
+# *import* time, so with a read-only root and no writable path here the process
+# dies before uvicorn even loads the app.
+RUN mkdir -p /app/logs /app/shared_files /home/app/.cache /home/app/.paddlex \
+    && chown -R app:app /app/logs /app/shared_files /home/app/.cache /home/app/.paddlex
 
 ENV HOME=/home/app \
     PATH="/opt/venv/bin:$PATH" \

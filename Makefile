@@ -8,7 +8,8 @@
 #   docker compose --profile ollama up -d
 
 .PHONY: up down restart logs worker-logs ps rebuild sh check-env init-env ensure-ollama-network \
-	install-dev format format-check lint type-check test check clean help
+	install-dev format format-check lint type-check test check clean help \
+	backup backup-cron backup-cron-remove backup-log restore
 
 COMPOSE = docker compose --env-file .env
 LOG_TAIL ?= 200
@@ -19,6 +20,7 @@ help:
 	@echo "Ollama:  make ensure-ollama-network   (shared Lost Vowels daemon)"
 	@echo "Quality: make format | format-check | lint | type-check | test | check"
 	@echo "         make install-dev | clean"
+	@echo "Backups: make backup | restore | backup-cron | backup-cron-remove | backup-log"
 
 # ---------------------------------------------------------------------------
 # Stack
@@ -199,3 +201,34 @@ clean:
 	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
 	rm -rf htmlcov/ .coverage build/ dist/
+
+# ---------------------------------------------------------------------------
+# Backups
+# ---------------------------------------------------------------------------
+
+## Create and validate a mode-0600 PostgreSQL dump (plus a Qdrant snapshot) under ./backups, then keep only
+## the newest BACKUP_RETENTION copies (default 2). Pruning happens only after
+## the new copy is written and verified.
+backup:
+	./scripts/backup-db.sh
+
+## Install the daily backup cron entry for this user (idempotent). Runs at
+## 01:40 host time; SCHEDULE='0 2 * * *' picks another. Every app on the
+## shared VPS is staggered so they never contend in the same minute.
+backup-cron:
+	SCHEDULE="$(SCHEDULE)" ./scripts/install-backup-cron.sh
+
+## Remove the daily backup cron entry. Existing copies are left alone.
+backup-cron-remove:
+	./scripts/install-backup-cron.sh --uninstall
+
+## Show what the scheduled backups have been doing.
+backup-log:
+	@tail -n 40 backups/backup.log 2>/dev/null || echo "No scheduled backup has run yet."
+
+## Restore BACKUP into the local Compose database. Requires CONFIRM=restore.
+## Destructive: the restore replaces what is there now.
+restore:
+	@test "$(CONFIRM)" = "restore" || (echo "Refusing restore: pass CONFIRM=restore" >&2; exit 1)
+	@test -n "$(BACKUP)" || (echo "Refusing restore: pass BACKUP=/absolute/path/file.dump" >&2; exit 1)
+	./scripts/restore-db.sh "$(BACKUP)" --confirm

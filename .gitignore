@@ -99,3 +99,8 @@ output/
 logs/
 *.log
 *.log.*
+
+# Database backups. A dump is a full copy of production user data — it must
+# never be committed. Created by scripts/backup-db.sh; retention is handled
+# there, and copies belong off-host.
+backups/
