@@ -1,6 +1,6 @@
 """Tests for authentication routes."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -25,13 +25,13 @@ async def test_register_success(
 async def test_register_duplicate_email(
     mock_send_email, client: AsyncClient, test_user_data: dict, registered_user
 ):
-    """Test registration with duplicate email."""
+    """Duplicate registration does not disclose whether the account exists."""
     mock_send_email.return_value = None
     response = await client.post("/auth/register", json=test_user_data)
-    assert response.status_code == 400
+    assert response.status_code == 201
     data = response.json()
-    assert "detail" in data
-    assert "already registered" in data["detail"].lower()
+    assert "message" in data
+    assert "already" not in data["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -78,6 +78,40 @@ async def test_refresh_token_success(client: AsyncClient, authenticated_user: di
     data = response.json()
     assert "access_token" in data
     assert "refresh_token" in data
+    assert data["refresh_token"] != authenticated_user["refresh_token"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_reuse_revokes_family(
+    client: AsyncClient, authenticated_user: dict
+):
+    """A used refresh token cannot be replayed and poisons its token family."""
+    original = authenticated_user["refresh_token"]
+    first = await client.post("/auth/refresh", json={"refresh_token": original})
+    assert first.status_code == 200
+    rotated = first.json()["refresh_token"]
+
+    replay = await client.post("/auth/refresh", json={"refresh_token": original})
+    assert replay.status_code == 401
+
+    family_member = await client.post("/auth/refresh", json={"refresh_token": rotated})
+    assert family_member.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_multibyte_password_over_bcrypt_limit_is_rejected(
+    client: AsyncClient,
+):
+    """Passwords are rejected by UTF-8 byte length, never silently truncated."""
+    response = await client.post(
+        "/auth/register",
+        json={
+            "name": "Byte Limit",
+            "email": "bytes@example.com",
+            "password": "é" * 40,
+        },
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -91,6 +125,48 @@ async def test_logout_success(client: AsyncClient, authenticated_user: dict):
     assert response.status_code == 200
     data = response.json()
     assert "message" in data
+
+
+@pytest.mark.asyncio
+@patch("app.routes.auth.delete_user_pdf_data", new_callable=AsyncMock)
+async def test_delete_account_erases_user_and_invalidates_token(
+    mock_delete_pdf_data,
+    client: AsyncClient,
+    authenticated_user: dict,
+):
+    """Deletion removes the identity, server sessions, and user-owned RAG data."""
+    response = await client.request(
+        "DELETE",
+        "/auth/account",
+        json={"password": "testpassword123"},
+        headers=authenticated_user["headers"],
+    )
+    assert response.status_code == 200
+    mock_delete_pdf_data.assert_awaited_once()
+
+    retry = await client.post(
+        "/auth/logout",
+        json={"refresh_token": authenticated_user["refresh_token"]},
+        headers=authenticated_user["headers"],
+    )
+    assert retry.status_code == 401
+
+
+@pytest.mark.asyncio
+@patch("app.routes.auth.delete_user_pdf_data", new_callable=AsyncMock)
+async def test_delete_account_requires_current_password(
+    mock_delete_pdf_data,
+    client: AsyncClient,
+    authenticated_user: dict,
+):
+    response = await client.request(
+        "DELETE",
+        "/auth/account",
+        json={"password": "wrongpassword"},
+        headers=authenticated_user["headers"],
+    )
+    assert response.status_code == 401
+    mock_delete_pdf_data.assert_not_awaited()
 
 
 @pytest.mark.asyncio

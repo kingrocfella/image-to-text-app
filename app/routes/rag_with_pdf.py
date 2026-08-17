@@ -1,30 +1,27 @@
 """RAG with PDF route."""
 
-import os
+import asyncio
 import tempfile
-from typing import Optional
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Optional
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    UploadFile,
-    status,
-)
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+
 from app.database import User
 from app.dependencies import get_current_active_user
-from app.schemas import JobQueuedResponse
-from app.utils import models_supported, delete_temp_file
 from app.queues import enqueue_rag_job
+from app.schemas import JobQueuedResponse
+from app.utils import (
+    PDF_MAX_BYTES,
+    delete_temp_file,
+    models_supported,
+    read_upload_limited,
+    validate_pdf_content,
+    verify_openai_password,
+)
 from app.utils.logger import logger
 
 router = APIRouter()
-
-load_dotenv()
 
 
 @router.post(
@@ -34,7 +31,7 @@ load_dotenv()
 )
 async def rag_with_pdf(
     pdf: UploadFile | None = File(None),
-    query: str = Form(...),
+    query: str = Form(..., min_length=1, max_length=2000),
     model: str = Form(...),
     past_request_id: Optional[str] = Form(None),
     openai_pass: Optional[str] = Form(None),
@@ -51,7 +48,7 @@ async def rag_with_pdf(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid model."
         )
 
-    if model == models_supported["openai"] and openai_pass != os.getenv("OPENAI_PASS"):
+    if model == models_supported["openai"] and not verify_openai_password(openai_pass):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect OpenAI password.",
@@ -80,7 +77,6 @@ async def rag_with_pdf(
             "model": model,
             "user_id": str(_current_user.id),
             "past_request_id": past_request_id,
-            "openai_pass": openai_pass,
         }
 
         # If PDF is provided, save it to shared volume for worker access
@@ -95,12 +91,8 @@ async def rag_with_pdf(
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=suffix, dir=str(shared_pdf_dir)
             ) as tmp_file:
-                content = await pdf.read()
-                if not content:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="The uploaded PDF file is empty.",
-                    )
+                content = await read_upload_limited(pdf, PDF_MAX_BYTES)
+                await asyncio.to_thread(validate_pdf_content, content)
                 tmp_file.write(content)
                 pdf_file_path = tmp_file.name
 
@@ -111,8 +103,7 @@ async def rag_with_pdf(
         job_id = enqueue_rag_job(job_data)
 
         logger.info(
-            "RAG job enqueued for user %s (ID: %s) - Job ID: %s",
-            _current_user.email,
+            "RAG job enqueued (user ID: %s) - Job ID: %s",
             _current_user.id,
             job_id,
         )

@@ -19,7 +19,12 @@ from app.database.redis import (
 )
 
 # Model exports
-from app.database.postgres_models import PDFRequest, TokenBlacklist, User
+from app.database.postgres_models import (
+    PDFRequest,
+    RefreshSession,
+    TokenBlacklist,
+    User,
+)
 
 __all__ = [
     "Base",
@@ -34,5 +39,6 @@ __all__ = [
     "get_result_backend",
     "User",
     "TokenBlacklist",
+    "RefreshSession",
     "PDFRequest",
 ]

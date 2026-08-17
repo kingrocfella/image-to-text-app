@@ -4,6 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.database import User
 from app.dependencies.dependencies import get_current_active_user
+from app.queues import (
+    JOB_TYPE_IMAGE,
+    JOB_TYPE_RAG,
+    JOB_TYPE_SOUND,
+    JobNotFoundError,
+    get_job_status,
+)
 from app.schemas import (
     ImageJobResult,
     JobStatusFailed,
@@ -11,7 +18,6 @@ from app.schemas import (
     ResponseItem,
     SoundJobResult,
 )
-from app.queues import get_job_status, JOB_TYPE_RAG, JOB_TYPE_SOUND, JOB_TYPE_IMAGE
 from app.utils.logger import logger
 
 router = APIRouter()
@@ -28,7 +34,7 @@ router = APIRouter()
 )
 def get_job_status_endpoint(
     message_id: str,
-    _current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ) -> (
     ResponseItem | SoundJobResult | ImageJobResult | JobStatusPending | JobStatusFailed
 ):
@@ -37,7 +43,7 @@ def get_job_status_endpoint(
     Returns the job status and result if completed.
     """
     try:
-        status_info = get_job_status(message_id)
+        status_info = get_job_status(message_id, str(current_user.id))
         job_type = status_info.get("job_type")
 
         # If job is finished, return appropriate result type
@@ -82,6 +88,11 @@ def get_job_status_endpoint(
             error=status_info.get("error", "Unknown error"),
         )
 
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found.",
+        ) from exc
     except Exception as exc:
         logger.error("Failed to get job status: %s", exc, exc_info=True)
         raise HTTPException(

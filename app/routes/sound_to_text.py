@@ -9,7 +9,12 @@ from app.database import User
 from app.dependencies.dependencies import get_current_active_user
 from app.schemas import JobQueuedResponse
 from app.queues import enqueue_sound_job
-from app.utils import delete_temp_file
+from app.utils import (
+    AUDIO_MAX_BYTES,
+    delete_temp_file,
+    read_upload_limited,
+    validate_sound_content,
+)
 from app.utils.logger import logger
 from app.utils.utils import validate_sound_file
 
@@ -32,16 +37,11 @@ async def transcribe_sound_to_text(
 
     Returns a job ID that can be used to check the status via GET /job/{message_id}.
     """
-    logger.info(
-        "Sound-to-text request from user: %s (ID: %s) - File: %s",
-        _current_user.email,
-        _current_user.id,
-        file.filename,
-    )
+    logger.info("Sound-to-text request (user ID: %s)", _current_user.id)
 
     # Validate sound file
     if not validate_sound_file(file):
-        logger.error("Invalid sound file: %s", file.filename)
+        logger.warning("Invalid sound upload metadata (user ID: %s)", _current_user.id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid sound file.",
@@ -56,12 +56,8 @@ async def transcribe_sound_to_text(
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=suffix, dir=str(SHARED_AUDIO_DIR)
         ) as tmp_file:
-            content = await file.read()
-            if not content:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The uploaded audio file is empty.",
-                )
+            content = await read_upload_limited(file, AUDIO_MAX_BYTES)
+            validate_sound_content(content, file.filename)
             tmp_file.write(content)
             audio_file_path = tmp_file.name
 
@@ -74,8 +70,7 @@ async def transcribe_sound_to_text(
         job_id = enqueue_sound_job(job_data)
 
         logger.info(
-            "Sound-to-text job enqueued for user %s (ID: %s) - Job ID: %s",
-            _current_user.email,
+            "Sound-to-text job enqueued (user ID: %s) - Job ID: %s",
             _current_user.id,
             job_id,
         )

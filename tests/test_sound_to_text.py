@@ -1,6 +1,7 @@
 """Tests for sound to text conversion routes (queue-based API)."""
 
 from io import BytesIO
+import wave
 from unittest.mock import patch
 
 import pytest
@@ -10,10 +11,21 @@ from app.database import User
 from app.utils import create_access_token, get_password_hash
 
 
+def _wav_bytes() -> BytesIO:
+    output = BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(b"\x00\x00" * 80)
+    output.seek(0)
+    return output
+
+
 @pytest.mark.asyncio
 async def test_convert_sound_unauthorized(client: AsyncClient):
     """Test sound conversion without authentication."""
-    audio_bytes = BytesIO(b"fake audio content")
+    audio_bytes = _wav_bytes()
 
     response = await client.post(
         "/convert/sound/text", files={"file": ("test.wav", audio_bytes, "audio/wav")}
@@ -62,7 +74,7 @@ async def test_convert_sound_success(
     """Test successful sound-to-text job enqueue."""
     mock_enqueue.return_value = "test-job-id-123"
 
-    audio_bytes = BytesIO(b"fake audio content")
+    audio_bytes = _wav_bytes()
 
     with patch("app.routes.sound_to_text.tempfile.NamedTemporaryFile") as mock_temp:
         mock_temp.return_value.__enter__.return_value.name = "/tmp/test.wav"
@@ -119,7 +131,7 @@ async def test_convert_sound_enqueue_failure(
     """Test sound conversion when enqueue fails."""
     mock_enqueue.side_effect = Exception("Redis connection failed")
 
-    audio_bytes = BytesIO(b"fake audio content")
+    audio_bytes = _wav_bytes()
 
     with patch("app.routes.sound_to_text.Path.mkdir"):
         with patch("app.routes.sound_to_text.tempfile.NamedTemporaryFile") as mock_temp:

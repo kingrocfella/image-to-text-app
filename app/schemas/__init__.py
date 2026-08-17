@@ -1,6 +1,7 @@
 """Pydantic schemas for API requests and responses."""
 
 from app.schemas.auth_schemas import (
+    DeleteAccountRequest,
     MessageResponse,
     RefreshTokenRequest,
     TokenResponse,
@@ -17,6 +18,7 @@ from app.schemas.schemas import (
 )
 
 __all__ = [
+    "DeleteAccountRequest",
     "MessageResponse",
     "RefreshTokenRequest",
     "TokenResponse",

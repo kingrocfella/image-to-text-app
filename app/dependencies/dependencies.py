@@ -7,7 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.utils import decode_token
+from app.utils import decode_token, token_fingerprint
 from app.utils.logger import logger
 from app.database import TokenBlacklist, User, get_db
 
@@ -23,7 +23,9 @@ async def get_current_user(
 
     try:
         # Check if token is blacklisted
-        stmt = select(TokenBlacklist).where(TokenBlacklist.token == token)
+        stmt = select(TokenBlacklist).where(
+            TokenBlacklist.token == token_fingerprint(token)
+        )
         result = await db.execute(stmt)
         blacklisted = result.scalar_one_or_none()
         if blacklisted:
@@ -86,7 +88,7 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        logger.debug("User authenticated: %s (ID: %s)", user.email, user.id)
+        logger.debug("User authenticated (ID: %s)", user.id)
         return user
     except HTTPException:
         raise
@@ -104,7 +106,7 @@ async def get_current_active_user(
 ) -> User:
     """Get current active (verified) user."""
     if not bool(current_user.is_verified):  # type: ignore[arg-type]
-        logger.warning("Access denied: Email not verified - %s", current_user.email)
+        logger.warning("Access denied: email not verified (ID: %s)", current_user.id)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified",

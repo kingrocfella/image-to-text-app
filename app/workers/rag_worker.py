@@ -1,17 +1,16 @@
 """Worker functions for processing RAG PDF jobs."""
 
-import os
 import asyncio
 import uuid
-from typing import Dict, Any
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
+from typing import Any, Dict
 
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client.models import Filter, FieldCondition, MatchValue
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from fastapi import UploadFile
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client.models import FieldCondition, Filter, MatchValue
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.database import get_database_url
 from app.utils import (
@@ -20,8 +19,8 @@ from app.utils import (
     get_rag_ollama_response,
     models_supported,
 )
-from app.utils.rag_vectorstore import load_existing_vectorstore, process_new_pdf
 from app.utils.logger import logger
+from app.utils.rag_vectorstore import load_existing_vectorstore, process_new_pdf
 
 # Database setup for worker
 # Use NullPool because each asyncio.run() creates a new event loop,
@@ -41,16 +40,11 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
     past_request_id = job_data.get("past_request_id")
     pdf_file_path = job_data.get("pdf_file_path")
     pdf_filename = job_data.get("pdf_filename", "uploaded.pdf")
-    openai_pass = job_data.get("openai_pass")
-
-    logger.info("Processing RAG job with data: %s", job_data)
+    logger.info("Processing RAG job")
 
     # Validate model
     if model not in models_supported:
         raise ValueError(f"Invalid model: {model}")
-
-    if model == models_supported["openai"] and openai_pass != os.getenv("OPENAI_PASS"):
-        raise ValueError("Incorrect OpenAI password")
 
     # Create database session
     async with AsyncSessionLocal() as db:
@@ -60,17 +54,13 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Handle existing request or new PDF
         if past_request_id:
-            logger.info(
-                "Loading existing vectorstore with request_id: %s", past_request_id
-            )
+            logger.info("Loading existing vectorstore")
             vectorstore, current_request_id = await load_existing_vectorstore(
                 past_request_id, user_id, db
             )
         elif pdf_file_path and Path(pdf_file_path).exists():
             # Create a mock UploadFile-like object for process_new_pdf
-            logger.info(
-                "Creating mock UploadFile-like object for PDF file: %s", pdf_file_path
-            )
+            logger.info("Preparing uploaded PDF for processing")
             with open(pdf_file_path, "rb") as f:
                 file_content = f.read()
 
@@ -80,18 +70,14 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
                 file=file_obj,
             )
 
-            logger.info("Processing new PDF file: %s", pdf_file_path)
-            logger.info("Upload file: %s", upload_file)
+            logger.info("Processing new PDF")
 
             vectorstore, current_request_id, tmp_file_path = await process_new_pdf(
                 upload_file, user_id, db
             )
-            logger.info("Successfully processed new PDF file: %s", pdf_file_path)
+            logger.info("Successfully processed new PDF")
         else:
-            logger.error(
-                "Either past_request_id or pdf_file_path or %s does not exist.",
-                pdf_file_path,
-            )
+            logger.error("RAG job is missing an accessible PDF or request ID")
             raise ValueError("Either past_request_id or pdf_file_path must be provided")
 
         try:

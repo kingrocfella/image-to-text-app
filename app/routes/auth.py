@@ -5,15 +5,16 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from dotenv import load_dotenv
 
 from app.schemas import (
+    DeleteAccountRequest,
     MessageResponse,
     RefreshTokenRequest,
     TokenResponse,
@@ -26,11 +27,14 @@ from app.utils import (
     decode_token,
     generate_verification_token,
     get_password_hash,
+    token_fingerprint,
     verify_password,
 )
 from app.utils.logger import logger
-from app.database import TokenBlacklist, User, get_db
+from app.database import RefreshSession, TokenBlacklist, User, get_db
 from app.dependencies import get_current_user
+from app.queues import mark_account_deleted_and_purge_jobs
+from app.utils.rag_vectorstore import delete_user_pdf_data
 
 load_dotenv()
 
@@ -79,9 +83,9 @@ def send_verification_email(email: str, verification_token: str):
             server.starttls()
             server.login(smtp_username, smtp_password)
             server.send_message(msg)
-    except Exception as e:  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error(
-            "Failed to send verification email to %s: %s", email, e, exc_info=True
+            "Failed to send verification email: %s", type(exc).__name__, exc_info=True
         )
 
 
@@ -91,19 +95,16 @@ def send_verification_email(email: str, verification_token: str):
 async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
     """Register a new user"""
     try:
-        logger.info("Registration attempt for email: %s", user_data.email)
+        logger.info("Registration attempt")
 
         # Check if user already exists
         stmt = select(User).where(User.email == user_data.email)
         result = await db.execute(stmt)
         existing_user = result.scalar_one_or_none()
         if existing_user:
-            logger.warning(
-                "Registration failed: Email already registered - %s", user_data.email
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
+            logger.info("Registration request matched an existing account")
+            return MessageResponse(
+                message="If the address can be registered, a verification email will be sent."
             )
 
         # Create new user
@@ -115,7 +116,7 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
             email=user_data.email,
             hashed_password=hashed_password,
             is_verified=False,
-            verification_token=verification_token,
+            verification_token=token_fingerprint(verification_token),
         )
 
         db.add(new_user)
@@ -125,19 +126,17 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
         # Send verification email
         send_verification_email(user_data.email, verification_token)
 
-        logger.info(
-            "User registered successfully: %s (ID: %s)", user_data.email, new_user.id
-        )
+        logger.info("User registered successfully (ID: %s)", new_user.id)
 
+        # Return the same generic message as the already-registered branch so the
+        # response body cannot be used to enumerate which emails have accounts.
         return MessageResponse(
-            message="User registered successfully. Please check your email to verify your account."
+            message="If the address can be registered, a verification email will be sent."
         )
     except HTTPException:
         raise
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error(
-            "Registration error for email %s: %s", user_data.email, exc, exc_info=True
-        )
+        logger.error("Registration error: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Registration failed",
@@ -148,7 +147,7 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     """Login user and return access and refresh tokens."""
     try:
-        logger.info("Login attempt for email: %s", credentials.email)
+        logger.info("Login attempt")
 
         # Find user by email
         stmt = select(User).where(User.email == credentials.email)
@@ -156,7 +155,7 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
         user = result.scalar_one_or_none()
 
         if not user:
-            logger.warning("Login failed: User not found - %s", credentials.email)
+            logger.warning("Login failed: invalid credentials")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -164,16 +163,16 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
 
         # Check if user has verified their email
         if not user.is_verified:  # type: ignore[attr-defined]
-            logger.warning("Login failed: Email not verified - %s", credentials.email)
+            logger.warning("Login failed: invalid credentials or account state")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Please verify your email before logging in",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
             )
 
         hashed_password = user.hashed_password
 
         if hashed_password is None:
-            logger.warning("Login failed: User has no password - %s", credentials.email)
+            logger.warning("Login failed: invalid credentials")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -181,7 +180,7 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
 
         # Verify password
         if not verify_password(credentials.password, str(hashed_password)):  # type: ignore[arg-type]
-            logger.warning("Login failed: Invalid password - %s", credentials.email)
+            logger.warning("Login failed: invalid credentials")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -190,9 +189,26 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
         # Create tokens
         user_id = str(user.id)
         access_token = create_access_token(data={"sub": user_id})
-        user_refresh_token = create_refresh_token(data={"sub": user_id})
+        family_id = uuid4()
+        user_refresh_token = create_refresh_token(
+            data={"sub": user_id, "family": str(family_id)}
+        )
+        refresh_payload = decode_token(user_refresh_token)
+        if refresh_payload is None:
+            raise RuntimeError("Newly issued refresh token could not be decoded")
+        db.add(
+            RefreshSession(
+                token_hash=token_fingerprint(user_refresh_token),
+                family_id=family_id,
+                user_id=user.id,
+                expires_at=datetime.fromtimestamp(
+                    refresh_payload["exp"], tz=timezone.utc
+                ),
+            )
+        )
+        await db.commit()
 
-        logger.info("Login successful: %s (ID: %s)", credentials.email, user.id)
+        logger.info("Login successful (ID: %s)", user.id)
 
         return TokenResponse(
             access_token=access_token,
@@ -203,9 +219,7 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error(
-            "Login error for email %s: %s", credentials.email, exc, exc_info=True
-        )
+        logger.error("Login error: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login failed",
@@ -218,23 +232,21 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
 async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     """Verify user email with verification token from query parameter."""
     try:
-        logger.info("Email verification attempt with token: %s...", token[:10])
+        logger.info("Email verification attempt")
 
-        stmt = select(User).where(User.verification_token == token)
+        stmt = select(User).where(User.verification_token == token_fingerprint(token))
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
 
         if not user:
-            logger.warning(
-                "Email verification failed: Invalid token - %s...", token[:10]
-            )
+            logger.warning("Email verification failed: invalid token")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid verification token",
             )
 
         if bool(user.is_verified):
-            logger.info("Email already verified: %s", user.email)
+            logger.info("Email already verified (ID: %s)", user.id)
             return MessageResponse(message="Email already verified")
 
         # Update user as verified
@@ -243,7 +255,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
         user.updated_at = datetime.now(timezone.utc)  # type: ignore[assignment]
         await db.commit()
 
-        logger.info("Email verified successfully: %s (ID: %s)", user.email, user.id)
+        logger.info("Email verified successfully (ID: %s)", user.id)
 
         return MessageResponse(message="Email verified successfully")
     except HTTPException:
@@ -265,17 +277,6 @@ async def refresh_token(
         token = request.refresh_token
         logger.info("Token refresh attempt")
 
-        # Check if token is blacklisted
-        stmt = select(TokenBlacklist).where(TokenBlacklist.token == token)
-        result = await db.execute(stmt)
-        blacklisted = result.scalar_one_or_none()
-        if blacklisted:
-            logger.warning("Token refresh failed: Token blacklisted")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token has been revoked",
-            )
-
         # Decode refresh token
         payload = decode_token(token)
         if payload is None:
@@ -293,9 +294,10 @@ async def refresh_token(
                 detail="Invalid token.",
             )
 
-        # Get user ID from token
+        # Bind the signed token to its server-side, one-time session.
         user_id_str = payload.get("sub")
-        if not user_id_str:
+        family_id_str = payload.get("family")
+        if not user_id_str or not family_id_str:
             logger.warning("Token refresh failed: Missing user ID in token")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -304,14 +306,39 @@ async def refresh_token(
 
         try:
             user_id = UUID(user_id_str)
-        except ValueError as exc:
-            logger.warning(
-                "Token refresh failed: Invalid user ID format - %s", user_id_str
-            )
+            family_id = UUID(family_id_str)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Token refresh failed: invalid token identifiers")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid User ID",
+                detail="Invalid token payload",
             ) from exc
+
+        current_hash = token_fingerprint(token)
+        stmt = (
+            select(RefreshSession)
+            .where(RefreshSession.token_hash == current_hash)
+            .with_for_update()
+        )
+        result = await db.execute(stmt)
+        refresh_session = result.scalar_one_or_none()
+        if (
+            refresh_session is None
+            or refresh_session.revoked_at is not None
+            or refresh_session.user_id != user_id
+            or refresh_session.family_id != family_id
+        ):
+            await db.execute(
+                update(RefreshSession)
+                .where(RefreshSession.family_id == family_id)
+                .values(revoked_at=datetime.now(timezone.utc))
+            )
+            await db.commit()
+            logger.warning("Token refresh reuse or unknown session detected")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh token has been revoked",
+            )
 
         # Verify user exists
         stmt = select(User).where(User.id == user_id)
@@ -324,14 +351,32 @@ async def refresh_token(
                 detail="User not found",
             )
 
-        # Create new access token
+        # Rotate the refresh token. The database row lock makes concurrent reuse lose.
         access_token = create_access_token(data={"sub": user_id_str})
+        next_refresh_token = create_refresh_token(
+            data={"sub": user_id_str, "family": str(family_id)}
+        )
+        next_payload = decode_token(next_refresh_token)
+        if next_payload is None:
+            raise RuntimeError("Newly issued refresh token could not be decoded")
+        next_hash = token_fingerprint(next_refresh_token)
+        refresh_session.revoked_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+        refresh_session.replaced_by_hash = next_hash  # type: ignore[assignment]
+        db.add(
+            RefreshSession(
+                token_hash=next_hash,
+                family_id=family_id,
+                user_id=user_id,
+                expires_at=datetime.fromtimestamp(next_payload["exp"], tz=timezone.utc),
+            )
+        )
+        await db.commit()
 
         logger.info("Token refreshed successfully for user: %s", user_id)
 
         return TokenResponse(
             access_token=access_token,
-            refresh_token=token,
+            refresh_token=next_refresh_token,
             name=str(user.name),  # type: ignore[arg-type]
             user_id=str(user.id),
         )
@@ -354,9 +399,7 @@ async def logout(
 ):
     """Logout user by blacklisting access and refresh tokens."""
     try:
-        logger.info(
-            "Logout attempt for user: %s (ID: %s)", current_user.email, current_user.id
-        )
+        logger.info("Logout attempt (ID: %s)", current_user.id)
 
         access_token = credentials.credentials
         user_refresh_token = request.refresh_token
@@ -372,43 +415,96 @@ async def logout(
                     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
                 blacklist_entry = TokenBlacklist(
-                    token=access_token,
+                    token=token_fingerprint(access_token),
                     user_id=current_user.id,
                     expires_at=expires_at,
                 )
                 db.add(blacklist_entry)
 
-        # Blacklist refresh token
+        # Revoke the whole refresh family so all devices in this session are invalid.
         if user_refresh_token:
             payload = decode_token(user_refresh_token)
-            if payload:
-                exp_timestamp = payload.get("exp")
-                if exp_timestamp:
-                    expires_at = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-                else:
-                    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-
-                blacklist_entry = TokenBlacklist(
-                    token=user_refresh_token,
-                    user_id=current_user.id,
-                    expires_at=expires_at,
-                )
-                db.add(blacklist_entry)
+            if payload and payload.get("sub") == str(current_user.id):
+                try:
+                    family_id = UUID(payload["family"])
+                except (KeyError, TypeError, ValueError):
+                    family_id = None
+                if family_id is not None:
+                    await db.execute(
+                        update(RefreshSession)
+                        .where(
+                            RefreshSession.family_id == family_id,
+                            RefreshSession.user_id == current_user.id,
+                        )
+                        .values(revoked_at=datetime.now(timezone.utc))
+                    )
 
         await db.commit()
 
         logger.info(
-            "User logged out successfully: %s (ID: %s)",
-            current_user.email,
+            "User logged out successfully (ID: %s)",
             current_user.id,
         )
 
         return MessageResponse(message="Logged out successfully. Tokens revoked.")
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error(
-            "Logout error for user %s: %s", current_user.email, exc, exc_info=True
+            "Logout error for user %s: %s", current_user.id, exc, exc_info=True
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Logout failed",
+        ) from exc
+
+
+@router.delete(
+    "/account", response_model=MessageResponse, status_code=status.HTTP_200_OK
+)
+async def delete_account(
+    request: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Permanently erase the authenticated account and its stored document data."""
+    result = await db.execute(
+        select(User).where(User.id == current_user.id).with_for_update()
+    )
+    locked_user = result.scalar_one_or_none()
+    if locked_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    if not verify_password(request.password, str(locked_user.hashed_password)):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+
+    try:
+        await delete_user_pdf_data(locked_user.id, db)
+        mark_account_deleted_and_purge_jobs(str(locked_user.id))
+        await db.execute(
+            delete(TokenBlacklist).where(TokenBlacklist.user_id == locked_user.id)
+        )
+        await db.execute(
+            delete(RefreshSession).where(RefreshSession.user_id == locked_user.id)
+        )
+        await db.delete(locked_user)
+        await db.commit()
+        logger.info("Account permanently deleted (ID: %s)", locked_user.id)
+        return MessageResponse(message="Account and stored data permanently deleted")
+    except HTTPException:
+        raise
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        await db.rollback()
+        logger.error(
+            "Account deletion failed (ID: %s): %s",
+            locked_user.id,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account deletion could not be completed",
         ) from exc

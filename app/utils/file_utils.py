@@ -25,10 +25,10 @@ def delete_temp_file(file_path: Optional[str | Path], silent: bool = False) -> b
 
         if path.exists():
             path.unlink()
-            logger.debug("Deleted temp file: %s", file_path)
+            logger.debug("Deleted temporary file")
             return True
         return False
     except Exception as exc:
         if not silent:
-            logger.warning("Failed to delete temp file %s: %s", file_path, exc)
+            logger.warning("Failed to delete temporary file: %s", type(exc).__name__)
         return False

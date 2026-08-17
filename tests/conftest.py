@@ -1,21 +1,29 @@
 """Pytest configuration and fixtures."""
 # pylint: disable=import-error,redefined-outer-name,unused-argument,unexpected-keyword-arg,no-member
 
+import os
 from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import AsyncGenerator
+
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only-32-bytes")
+os.environ.setdefault("OPENAI_PASS", "test-openai-password")
+os.environ.setdefault("ENVIRONMENT", "test")
+os.environ.setdefault("POSTGRES_USER", "test")
+os.environ.setdefault("POSTGRES_PASSWORD", "test")
+os.environ.setdefault("POSTGRES_DB", "test")
+os.environ.setdefault("POSTGRES_HOST", "127.0.0.1")
+os.environ.setdefault("POSTGRES_PORT", "5432")
 
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 from PIL import Image
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import get_db
-from app.database import Base, User
+from app.database import Base, User, get_db
 from app.routes import router as api_router
 from app.utils import get_password_hash
-
 
 try:
     from httpx import ASGITransport
@@ -40,7 +48,6 @@ async def test_lifespan(_app: FastAPI):
 
 test_app = FastAPI(title="Test ScanGenAI API", lifespan=test_lifespan)
 test_app.include_router(api_router)
-
 
 
 @pytest.fixture(scope="function")

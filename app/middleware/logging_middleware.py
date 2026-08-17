@@ -2,6 +2,7 @@
 
 import time
 from typing import Callable
+from uuid import uuid4
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,16 +17,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         """Log request and response details."""
         start_time = time.time()
 
-        # Get client IP
-        client_ip = request.client.host if request.client else "unknown"
+        request_id = str(uuid4())
 
         # Log request
         logger.info(
-            "API Request: %s %s - Client: %s - Query: %s",
+            "API Request: %s %s - Request ID: %s",
             request.method,
             request.url.path,
-            client_ip,
-            dict(request.query_params),
+            request_id,
         )
 
         # Process request
@@ -35,12 +34,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Log successful response
             logger.info(
-                "API Response: %s %s - Status: %s - Time: %.3fs",
+                "API Response: %s %s - Status: %s - Time: %.3fs - Request ID: %s",
                 request.method,
                 request.url.path,
                 response.status_code,
                 process_time,
+                request_id,
             )
+
+            response.headers["X-Request-ID"] = request_id
 
             return response
 
@@ -49,12 +51,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
             # Log error
             logger.error(
-                "API Error: %s %s - Client: %s - Time: %.3fs - Error: %s",
+                "API Error: %s %s - Time: %.3fs - Type: %s - Request ID: %s",
                 request.method,
                 request.url.path,
-                client_ip,
                 process_time,
-                str(exc),
+                type(exc).__name__,
+                request_id,
                 exc_info=True,
             )
             raise

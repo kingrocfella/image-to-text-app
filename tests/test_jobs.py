@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
-from app.queues import JOB_TYPE_RAG, JOB_TYPE_SOUND, JOB_TYPE_IMAGE
+from app.queues import JOB_TYPE_IMAGE, JOB_TYPE_RAG, JOB_TYPE_SOUND, JobNotFoundError
 
 
 @pytest.mark.asyncio
@@ -30,6 +30,9 @@ async def test_get_job_status_pending(
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "pending"
+    mock_get_status.assert_called_once_with(
+        "test-job-id", str(authenticated_user["user"].id)
+    )
 
 
 @pytest.mark.asyncio
@@ -193,3 +196,22 @@ async def test_get_job_status_unauthorized(client: AsyncClient):
     """Test getting job status without authentication."""
     response = await client.get("/job/test-job-id")
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@patch("app.routes.jobs.get_job_status")
+async def test_get_job_status_hides_jobs_not_owned_by_caller(
+    mock_get_status,
+    client: AsyncClient,
+    authenticated_user: dict,
+):
+    """A missing or differently owned job must be indistinguishable."""
+    mock_get_status.side_effect = JobNotFoundError("Job not found")
+
+    response = await client.get(
+        "/job/another-users-job",
+        headers=authenticated_user["headers"],
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Job not found."}

@@ -1,0 +1,8 @@
+# Development dependencies. Pinned to the same versions the rest of the
+# portfolio's Python apps use so `make check` behaves identically everywhere.
+black==24.10.0
+isort==5.13.2
+flake8==7.1.1
+mypy==1.13.0
+pytest==8.3.4
+pytest-cov==6.0.0

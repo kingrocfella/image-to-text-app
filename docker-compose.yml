@@ -1,124 +1,195 @@
+# The required, gitignored .env is injected into every container — it is the
+# only environment file in this repository. Published host ports bind to
+# 127.0.0.1 so the datastores and the API are reachable from this machine only,
+# never the LAN. This is the single canonical compose file (no prod/override
+# variants); the hardened settings that used to live in docker-compose.prod.yml
+# are the defaults here.
+x-app-env: &app-env
+  - path: ./.env
+    required: true
+
+x-app-image: &app-image
+  build: .
+  image: image-to-text-app
+  restart: unless-stopped
+  env_file: *app-env
+
 services:
   postgres:
-    image: postgres:15-alpine
-    container_name: postgres
+    # Digest-pinned so a rebuild months from now is the same bytes.
+    image: postgres:15-alpine@sha256:fe0737ba566a2c5b2a28f34433c0a423261900ec17b9bf7ad115e1aae7e57f1b
+    container_name: scangenai-postgres
+    restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 256
+    env_file: *app-env
     ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      # Localhost only, and on a port no other app on the shared VPS publishes.
+      - '127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 10s
       timeout: 5s
       retries: 5
+
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant
-    ports:
-      - "6333:6333"
+    image: qdrant/qdrant@sha256:057ee3a8da769fe7310dd3537b4dc7583bf87a95ce8ac43c0af5a46bc580d1fc
+    container_name: scangenai-qdrant
     restart: unless-stopped
-    volumes:
-      - qdrant_data:/qdrant/storage
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 512
     environment:
       QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
-    healthcheck:
-      test:
-        ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-  ollama:
-    image: ollama/ollama
-    container_name: ollama
-    restart: always
     ports:
-      - "11434:11434"
+      - '127.0.0.1:${QDRANT_HOST_PORT:-6333}:6333'
     volumes:
-      - ollama_data:/root/.ollama
-    entrypoint: >
-      sh -c "
-        ollama serve & 
-        sleep 5 && 
-        ollama pull llama3.2:latest && 
-        wait
-      "
+      - qdrant_data:/qdrant/storage
     healthcheck:
-      test:
-        ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/127.0.0.1/11434' || exit 1"]
+      test: ['CMD-SHELL', "timeout 5 bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
   redis:
-    image: redis:7-alpine
-    container_name: redis
-    ports:
-      - "6379:6379"
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    container_name: scangenai-redis
     restart: unless-stopped
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 256
+    ports:
+      - '127.0.0.1:${REDIS_HOST_PORT:-6382}:6379'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
 
   web:
-    build: .
-    image: image-to-text-app:latest
-    container_name: image-to-text-app-web
+    <<: *app-image
+    container_name: scangenai-web
+    environment:
+      # Absolute path to the mounted volume. A relative LOG_DIR would write
+      # inside the container layer and vanish on the next rebuild.
+      LOG_DIR: /app/logs
+      # Containers reach the single shared Ollama daemon by service DNS over
+      # the word-games-ollama network. Host-run development uses the .env value.
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    read_only: true
+    cap_drop: ['ALL']
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=268435456,mode=1777
     ports:
-      - "8000:8000"
-    env_file:
-      - .env
+      - '127.0.0.1:${API_HOST_PORT:-8000}:8000'
     volumes:
-      - ./app:/app/app
-      - ./logs:/app/logs
+      - app_logs:/app/logs
+      - app_cache:/home/app/.cache
       - shared_pdfs:/app/shared_files
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    restart: unless-stopped
+    # The API is loopback-only behind the trusted TLS reverse proxy (see
+    # SECURITY_P0_DEPLOYMENT.md), so no untrusted peer can reach this socket.
+    # Honour the proxy's X-Forwarded-For so scope["client"] is the real client
+    # IP; without this the rate limiter buckets every user under the proxy IP.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "*"
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - default
+      - word-games-ollama
 
   worker:
-    build: .
-    image: image-to-text-app:latest
-    container_name: image-to-text-app-worker
-    env_file:
-      - .env
+    <<: *app-image
+    container_name: scangenai-worker
+    environment:
+      LOG_DIR: /app/logs
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    read_only: true
+    cap_drop: ['ALL']
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 512
+    tmpfs:
+      - /tmp:size=536870912,mode=1777
     volumes:
-      - ./app:/app/app
-      - ./logs:/app/logs
+      - app_logs:/app/logs
+      - app_cache:/home/app/.cache
       - shared_pdfs:/app/shared_files
-    command: dramatiq app.queues.job_queue --processes 1 --threads 2
-    restart: unless-stopped
+    command: dramatiq app.queues.job_queue --processes 1 --threads ${WORKER_THREADS:-8}
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - default
+      - word-games-ollama
+
+  # Opt-in only: `docker compose --profile ollama up`.
+  #
+  # DO NOT enable this on the shared VPS. Lost Vowels already runs the single
+  # Ollama daemon there, capped at 18 GB on a 24 GB box; a second daemon with
+  # its own loaded weights would exhaust the host and take every app down. This
+  # app reaches the daemon that is already running over word-games-ollama.
+  #
+  # This service exists for a development machine that has no Ollama at all.
+  ollama:
+    profiles: ['ollama']
+    image: ollama/ollama@sha256:9d30908e41144b1f1da89b9d8e33c07e4aeb43ff41a8660241b1686e2cc330ad
+    container_name: scangenai-ollama
+    restart: unless-stopped
+    env_file: *app-env
+    environment:
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 512
+    ports:
+      # 11435 belongs to Lost Vowels' shared daemon; this dev-only sidecar takes
+      # its own port so both can exist on one development machine.
+      - '127.0.0.1:${OLLAMA_HOST_PORT:-11438}:11434'
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./docker/ollama-entrypoint.sh:/usr/local/bin/ollama-entrypoint.sh:ro
+    entrypoint: ['/bin/sh', '/usr/local/bin/ollama-entrypoint.sh']
+    healthcheck:
+      test: ['CMD-SHELL', 'ollama show "$${OLLAMA_MODEL}" >/dev/null 2>&1']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 10m
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+    networks:
+      - default
+      - word-games-ollama
 
 volumes:
   postgres_data:
   qdrant_data:
-  ollama_data:
   redis_data:
   shared_pdfs:
+  app_logs:
+  app_cache:
+  ollama_data:
+
+networks:
+  # Created by `make ensure-ollama-network`. The single Lost Vowels Ollama
+  # daemon is attached to it; every app that needs a model joins it rather than
+  # running a daemon of its own.
+  word-games-ollama:
+    name: word-games-ollama
+    external: true

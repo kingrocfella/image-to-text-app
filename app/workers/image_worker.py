@@ -39,18 +39,18 @@ def process_image_job_sync(job_data: Dict[str, Any]) -> Dict[str, Any]:
     image_file_path = job_data["image_file_path"]
     filename = job_data.get("filename", "image.png")
 
-    logger.info("Processing image-to-text job for file: %s", filename)
+    logger.info("Processing image-to-text job")
 
     try:
         # Check if file exists
         if not Path(image_file_path).exists():
-            raise ValueError(f"Image file not found: {image_file_path}")
+            raise ValueError("Image file not found")
 
         # Get OCR instance
         ocr = _get_ocr()
 
         # Run OCR prediction
-        logger.info("Running OCR on file: %s", image_file_path)
+        logger.info("Running OCR")
         result = ocr.predict(image_file_path)
 
         # Extract only rec_texts from the result
@@ -70,8 +70,12 @@ def process_image_job_sync(job_data: Dict[str, Any]) -> Dict[str, Any]:
             "filename": filename,
             "segments_count": len(rec_texts),
         }
-    except Exception as e:
-        logger.error("Error processing image-to-text job: %s", e, exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Error processing image-to-text job: %s",
+            type(exc).__name__,
+            exc_info=True,
+        )
         raise
     finally:
         delete_temp_file(image_file_path)

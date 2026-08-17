@@ -5,6 +5,13 @@ import ollama
 
 client = ollama.Client(host=os.getenv("OLLAMA_URL"))
 
+# The shared VPS runs exactly one Ollama daemon (Lost Vowels'). Keeping the tag
+# and the generation bounds in .env lets this app converge on a model that
+# daemon already holds, instead of forcing it to swap weights per request.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b").strip()
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "500"))
+
 
 async def get_rag_ollama_response(query: str, relevant_context: str) -> str:
     """Get a response from the RAG model using Ollama."""
@@ -30,12 +37,12 @@ async def get_rag_ollama_response(query: str, relevant_context: str) -> str:
 
     def _generate():
         response = client.generate(
-            model="llama3.2:latest",
+            model=OLLAMA_MODEL,
             prompt=prompt,
             stream=False,
             options={
-                "temperature": 0.7,
-                "num_predict": 500,
+                "temperature": OLLAMA_TEMPERATURE,
+                "num_predict": OLLAMA_NUM_PREDICT,
             },
         )
         return str(response["response"])

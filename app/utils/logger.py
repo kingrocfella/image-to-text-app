@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -45,6 +46,31 @@ logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 # Prevent propagation to root logger to avoid duplicate logs
 logger.propagate = False
 
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*")
+_TOKEN_PARAM_RE = re.compile(r"(?i)(token=)[^\s&]+")
+_PRIVATE_PATH_RE = re.compile(
+    r"(?:/tmp|/var/folders|/app/shared_files)/[^\s:'\"]+", re.I
+)
+
+
+def sanitize_log_text(value: str) -> str:
+    """Redact account identifiers and credentials from rendered log output."""
+    value = _EMAIL_RE.sub("[REDACTED_EMAIL]", value)
+    value = _JWT_RE.sub("[REDACTED_TOKEN]", value)
+    value = _BEARER_RE.sub("Bearer [REDACTED_TOKEN]", value)
+    value = _TOKEN_PARAM_RE.sub(r"\1[REDACTED_TOKEN]", value)
+    return _PRIVATE_PATH_RE.sub("[REDACTED_PATH]", value)
+
+
+class SanitizingFormatter(logging.Formatter):
+    """Sanitize the final record, including exception tracebacks."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return sanitize_log_text(super().format(record))
+
+
 # Prevent duplicate logs
 if logger.handlers:
     logger.handlers.clear()
@@ -52,7 +78,7 @@ if logger.handlers:
 # Console handler with colored output
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
-console_format = logging.Formatter(
+console_format = SanitizingFormatter(
     "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -69,7 +95,7 @@ if LOG_DIR and LOG_FILE:
             encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
-        file_format = logging.Formatter(
+        file_format = SanitizingFormatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )

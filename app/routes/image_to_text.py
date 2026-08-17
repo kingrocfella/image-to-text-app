@@ -9,7 +9,13 @@ from app.dependencies import get_current_active_user
 from app.database import User
 from app.schemas import JobQueuedResponse
 from app.queues import enqueue_image_job
-from app.utils import validate_image_file, delete_temp_file
+from app.utils import (
+    IMAGE_MAX_BYTES,
+    delete_temp_file,
+    read_upload_limited,
+    validate_image_content,
+    validate_image_file,
+)
 from app.utils.logger import logger
 
 
@@ -32,23 +38,13 @@ async def convert_image_to_text(
 
     Returns a job ID that can be used to check the status via GET /job/{message_id}.
     """
-    logger.info(
-        "Image-to-text request from user: %s (ID: %s) - File: %s",
-        _current_user.email,
-        _current_user.id,
-        image.filename,
-    )
+    logger.info("Image-to-text request (user ID: %s)", _current_user.id)
 
     # Validate that the uploaded file is an image
     try:
         validate_image_file(image)
     except HTTPException as http_exc:
-        logger.error(
-            "Invalid image file from user %s: %s - %s",
-            _current_user.email,
-            image.filename,
-            http_exc.detail,
-        )
+        logger.warning("Invalid image upload (user ID: %s)", _current_user.id)
         raise
 
     image_file_path: str | None = None
@@ -60,12 +56,8 @@ async def convert_image_to_text(
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=suffix, dir=str(SHARED_IMAGE_DIR)
         ) as tmp_file:
-            content = await image.read()
-            if not content:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The uploaded image file is empty.",
-                )
+            content = await read_upload_limited(image, IMAGE_MAX_BYTES)
+            validate_image_content(content)
             tmp_file.write(content)
             image_file_path = tmp_file.name
 
@@ -78,8 +70,7 @@ async def convert_image_to_text(
         job_id = enqueue_image_job(job_data)
 
         logger.info(
-            "Image-to-text job enqueued for user %s (ID: %s) - Job ID: %s",
-            _current_user.email,
+            "Image-to-text job enqueued (user ID: %s) - Job ID: %s",
             _current_user.id,
             job_id,
         )

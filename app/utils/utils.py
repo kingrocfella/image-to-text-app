@@ -70,9 +70,7 @@ def validate_image_file(file: UploadFile) -> None:
     if file.filename:
         file_extension = Path(file.filename).suffix.lower()
         if file_extension not in allowed_extensions:
-            logger.warning(
-                "Invalid file extension: %s for file: %s", file_extension, file.filename
-            )
+            logger.warning("Invalid image extension: %s", file_extension)
             raise HTTPException(
                 status_code=400,
                 detail="Invalid file type.",
@@ -80,9 +78,7 @@ def validate_image_file(file: UploadFile) -> None:
 
     # Check MIME type
     if file.content_type and file.content_type not in allowed_mime_types:
-        logger.warning(
-            "Invalid MIME type: %s for file: %s", file.content_type, file.filename
-        )
+        logger.warning("Invalid image MIME type: %s", file.content_type)
         raise HTTPException(
             status_code=400,
             detail=f"Invalid MIME type. Expected image file, got: {file.content_type}",
@@ -120,12 +116,8 @@ def validate_sound_file(file: UploadFile) -> bool:
     # Check file extension
     if file.filename:
         file_extension = Path(file.filename).suffix.lower()
-        logger.info("file_extension: %s", file_extension)
-        logger.info("file_content_type: %s", file.content_type)
         if file_extension not in allowed_extensions:
-            logger.warning(
-                "Invalid file extension: %s for file: %s", file_extension, file.filename
-            )
+            logger.warning("Invalid sound extension: %s", file_extension)
             raise HTTPException(
                 status_code=400,
                 detail="Invalid sound file.",
@@ -133,9 +125,7 @@ def validate_sound_file(file: UploadFile) -> bool:
 
     # Check MIME type
     if file.content_type and file.content_type not in allowed_mime_types:
-        logger.warning(
-            "Invalid MIME type: %s for file: %s", file.content_type, file.filename
-        )
+        logger.warning("Invalid sound MIME type: %s", file.content_type)
         raise HTTPException(
             status_code=400,
             detail="Invalid sound file.",

@@ -1,10 +1,10 @@
 """Utility functions for RAG vectorstore operations."""
 
-import os
 import asyncio
+import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -14,14 +14,62 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.database import PDFRequest
+from app.database import PDFRequest, User
 from app.utils.file_utils import delete_temp_file
 from app.utils.logger import logger
+from app.utils.upload_security import PDF_MAX_BYTES, validate_pdf_content
 
 QDRANT_URL = os.getenv("QDRANT_URL")
+RAG_RETENTION_DAYS = int(os.getenv("RAG_RETENTION_DAYS", "30"))
+if RAG_RETENTION_DAYS <= 0:
+    raise RuntimeError("RAG_RETENTION_DAYS must be positive")
+
+
+async def delete_vector_collections(collection_names: list[str]) -> None:
+    """Delete Qdrant collections before their ownership records are removed."""
+    if not collection_names:
+        return
+    if not QDRANT_URL:
+        raise RuntimeError("QDRANT_URL is required to delete stored document data")
+
+    def _delete() -> None:
+        client = QdrantClient(url=QDRANT_URL)
+        try:
+            for collection_name in collection_names:
+                client.delete_collection(collection_name=collection_name)
+        finally:
+            client.close()
+
+    await asyncio.to_thread(_delete)
+
+
+async def delete_user_pdf_data(user_id: uuid.UUID, db: AsyncSession) -> None:
+    """Permanently remove one user's stored document embeddings and metadata."""
+    result = await db.execute(
+        select(PDFRequest.collection_name).where(PDFRequest.user_id == user_id)
+    )
+    collection_names = [str(name) for name in result.scalars().all()]
+    await delete_vector_collections(collection_names)
+    await db.execute(delete(PDFRequest).where(PDFRequest.user_id == user_id))
+
+
+async def purge_expired_pdf_data(db: AsyncSession) -> int:
+    """Remove document embeddings older than the configured retention window."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RAG_RETENTION_DAYS)
+    result = await db.execute(select(PDFRequest).where(PDFRequest.created_at < cutoff))
+    expired = list(result.scalars().all())
+    await delete_vector_collections(
+        [str(pdf_request.collection_name) for pdf_request in expired]
+    )
+    if expired:
+        await db.execute(
+            delete(PDFRequest).where(PDFRequest.id.in_([item.id for item in expired]))
+        )
+        await db.commit()
+    return len(expired)
 
 
 async def load_existing_vectorstore(
@@ -105,13 +153,21 @@ async def process_new_pdf(
 
     try:
         suffix = Path(pdf.filename).suffix if pdf.filename else ""
+        content = await pdf.read()
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The uploaded PDF file is empty.",
+            )
+        # Re-enforce the size and content bounds at the processing sink, not just
+        # at the upload route, so any caller of process_new_pdf stays protected.
+        if len(content) > PDF_MAX_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="The uploaded PDF file is too large.",
+            )
+        await asyncio.to_thread(validate_pdf_content, content)
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            content = await pdf.read()
-            if not content:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The uploaded PDF file is empty.",
-                )
             tmp_file.write(content)
             tmp_file_path = tmp_file.name
 
@@ -146,9 +202,18 @@ async def process_new_pdf(
                 doc.metadata = {}
             doc.metadata["request_id"] = current_request_id
 
-        collection_name = (
-            f"pdf_collection_{pdf_filename}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        # Serialize against account deletion. If deletion won, do not create a
+        # vector collection that no account can ever reach or erase.
+        user_result = await db.execute(
+            select(User).where(User.id == user_id).with_for_update()
         )
+        if user_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Account is no longer active.",
+            )
+
+        collection_name = f"pdf_collection_{current_request_id.replace('-', '')}"
 
         # Create vector embeddings
         embeddings = OpenAIEmbeddings(model="text-embedding-3-large")

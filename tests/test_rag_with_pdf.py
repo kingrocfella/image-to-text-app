@@ -5,15 +5,24 @@ from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
+from pypdf import PdfWriter
 
 from app.database import User
 from app.utils import create_access_token, get_password_hash
 
 
+def _valid_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(output)
+    return output.getvalue()
+
+
 @pytest.mark.asyncio
 async def test_rag_with_pdf_unauthorized(client: AsyncClient):
     """Test RAG with PDF without authentication."""
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
 
     response = await client.post(
@@ -29,7 +38,7 @@ async def test_rag_with_pdf_invalid_model(
     client: AsyncClient, authenticated_user: dict
 ):
     """Test RAG with PDF with invalid model parameter."""
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
 
     response = await client.post(
@@ -68,7 +77,7 @@ async def test_rag_with_pdf_missing_query(
     client: AsyncClient, authenticated_user: dict
 ):
     """Test RAG with PDF without query parameter."""
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
 
     response = await client.post(
@@ -80,16 +89,16 @@ async def test_rag_with_pdf_missing_query(
 
 
 @pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.os.getenv")
+@patch("app.routes.rag_with_pdf.verify_openai_password")
 async def test_rag_with_pdf_incorrect_openai_pass(
-    mock_getenv,
+    mock_verify_password,
     client: AsyncClient,
     authenticated_user: dict,
 ):
     """Test RAG with PDF with incorrect OpenAI password."""
-    mock_getenv.return_value = "correct-password"
+    mock_verify_password.return_value = False
 
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
 
     response = await client.post(
@@ -110,16 +119,16 @@ async def test_rag_with_pdf_incorrect_openai_pass(
 
 
 @pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.os.getenv")
+@patch("app.routes.rag_with_pdf.verify_openai_password")
 async def test_rag_with_pdf_missing_openai_pass(
-    mock_getenv,
+    mock_verify_password,
     client: AsyncClient,
     authenticated_user: dict,
 ):
     """Test RAG with PDF with missing OpenAI password when model is openai."""
-    mock_getenv.return_value = "correct-password"
+    mock_verify_password.return_value = False
 
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
 
     response = await client.post(
@@ -143,7 +152,7 @@ async def test_rag_with_pdf_both_pdf_and_past_request_id(
     authenticated_user: dict,
 ):
     """Test RAG with PDF when both PDF and past_request_id are provided."""
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
     pdf_file.seek(0)
 
@@ -177,7 +186,7 @@ async def test_rag_with_pdf_success_with_pdf(
     """Test successful RAG job enqueue with PDF file."""
     mock_enqueue.return_value = "test-job-id-123"
 
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
     pdf_file.seek(0)
 
@@ -233,21 +242,21 @@ async def test_rag_with_pdf_success_with_past_request_id(
 
 
 @pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.os.getenv")
+@patch("app.routes.rag_with_pdf.verify_openai_password")
 @patch("app.routes.rag_with_pdf.Path.mkdir")
 @patch("app.routes.rag_with_pdf.enqueue_rag_job")
 async def test_rag_with_pdf_success_with_openai(
     mock_enqueue,
     _mock_mkdir,
-    mock_getenv,
+    mock_verify_password,
     client: AsyncClient,
     authenticated_user: dict,
 ):
     """Test successful RAG job enqueue with OpenAI model."""
-    mock_getenv.return_value = "test-pass"
+    mock_verify_password.return_value = True
     mock_enqueue.return_value = "test-job-id-789"
 
-    pdf_content = b"%PDF-1.4\nfake pdf content"
+    pdf_content = _valid_pdf_bytes()
     pdf_file = BytesIO(pdf_content)
     pdf_file.seek(0)
 
@@ -270,10 +279,10 @@ async def test_rag_with_pdf_success_with_openai(
     assert data["message_id"] == "test-job-id-789"
     mock_enqueue.assert_called_once()
 
-    # Verify job data includes model and openai_pass
+    # Authorization is decided by the API; the shared secret never enters Redis.
     call_args = mock_enqueue.call_args[0][0]
     assert call_args["model"] == "openai"
-    assert call_args["openai_pass"] == "test-pass"
+    assert "openai_pass" not in call_args
 
 
 @pytest.mark.asyncio

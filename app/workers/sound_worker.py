@@ -51,7 +51,7 @@ def process_sound_job_sync(job_data: Dict[str, Any]) -> Dict[str, Any]:
     audio_file_path = job_data["audio_file_path"]
     filename = job_data.get("filename", "audio.wav")
 
-    logger.info("Processing sound-to-text job for file: %s", filename)
+    logger.info("Processing sound-to-text job")
 
     temp_file_path = None
     try:
@@ -60,7 +60,7 @@ def process_sound_job_sync(job_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Check if file exists
         if not Path(audio_file_path).exists():
-            raise ValueError(f"Audio file not found: {audio_file_path}")
+            raise ValueError("Audio file not found")
 
         temp_file_path = audio_file_path
 
@@ -102,8 +102,12 @@ def process_sound_job_sync(job_data: Dict[str, Any]) -> Dict[str, Any]:
             "content": result_text,
             "filename": filename,
         }
-    except Exception as e:
-        logger.error("Error processing sound-to-text job: %s", e, exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Error processing sound-to-text job: %s",
+            type(exc).__name__,
+            exc_info=True,
+        )
         raise
     finally:
         delete_temp_file(temp_file_path)
