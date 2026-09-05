@@ -46,7 +46,7 @@ A FastAPI-based REST API service that provides OCR (Optical Character Recognitio
 1. **Clone the repository** (if applicable):
 
    ```bash
-   git clone https://github.com/kingrocfella/image-to-text-app
+   git clone https://github.com/leonfrontier/image-to-text-app
    cd image-to-text-app
    ```
 

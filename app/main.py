@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
     logger.info("Application shutting down...")
 
 
-app = FastAPI(title="ScanGenAI API", lifespan=lifespan)
+app = FastAPI(title="Leon Frontier ScanGenAI API", lifespan=lifespan)
 
 # Global protections are registered once for the entire API surface.
 app.add_middleware(LoggingMiddleware)
