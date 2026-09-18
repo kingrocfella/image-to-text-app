@@ -1,0 +1,32 @@
+{% extends "emails/base.html" %}
+
+{% block title %}Verify your email &middot; {{ brand_name }}{% endblock %}
+
+{% block preheader %}One click to confirm your email and activate your {{ brand_name }} account.{% endblock %}
+
+{% block content %}
+<p style="margin:0 0 8px 0; font-size:13px; font-weight:600; letter-spacing:1.2px; text-transform:uppercase; color:#6366f1;">Welcome aboard</p>
+<h1 class="h1" style="margin:0 0 20px 0; font-size:28px; line-height:36px; font-weight:800; color:#111827; letter-spacing:-0.4px;">Confirm your email address</h1>
+
+<p style="margin:0 0 16px 0;">Hi{% if name %} {{ name }}{% endif %},</p>
+<p style="margin:0 0 28px 0;">Thanks for signing up for {{ brand_name }}. Please confirm this is your email address so we can activate your account and you can start turning images, audio and PDFs into text.</p>
+
+<table role="presentation" class="btn" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 32px 0;">
+  <tr>
+    <td align="center" bgcolor="#4f46e5" style="border-radius:10px; background-color:#4f46e5; background-image:linear-gradient(135deg,#6366f1 0%,#7c3aed 100%);">
+      <a href="{{ verification_url }}" target="_blank" style="display:inline-block; padding:15px 34px; font-size:16px; font-weight:700; line-height:20px; color:#ffffff; text-decoration:none; border-radius:10px;">Verify email address</a>
+    </td>
+  </tr>
+</table>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px 0;">
+  <tr>
+    <td bgcolor="#f7f7fb" style="background-color:#f7f7fb; border:1px solid #ececf3; border-radius:10px; padding:16px 18px;">
+      <p style="margin:0 0 6px 0; font-size:13px; line-height:20px; color:#6b7280;">Button not working? Paste this link into your browser:</p>
+      <p style="margin:0; font-size:13px; line-height:20px; word-break:break-all;"><a href="{{ verification_url }}" target="_blank" style="color:#4f46e5; text-decoration:underline;">{{ verification_url }}</a></p>
+    </td>
+  </tr>
+</table>
+
+<p style="margin:0; padding-top:24px; border-top:1px solid #eef0f4; font-size:14px; line-height:22px; color:#6b7280;">Didn&rsquo;t create a {{ brand_name }} account? You can safely ignore this email &mdash; no account will be activated without this confirmation.</p>
+{% endblock %}

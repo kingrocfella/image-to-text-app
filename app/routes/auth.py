@@ -1,17 +1,15 @@
 """Authentication routes."""
 
-import smtplib
+import secrets
 from datetime import datetime, timedelta, timezone
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import os
+from typing import Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from dotenv import load_dotenv
 
 from app.schemas import (
     DeleteAccountRequest,
@@ -30,63 +28,16 @@ from app.utils import (
     token_fingerprint,
     verify_password,
 )
+from app.utils.email_utils import render_template, send_verification_email
 from app.utils.logger import logger
 from app.database import RefreshSession, TokenBlacklist, User, get_db
 from app.dependencies import get_current_user
 from app.queues import mark_account_deleted_and_purge_jobs
 from app.utils.rag_vectorstore import delete_user_pdf_data
 
-load_dotenv()
-
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 security = HTTPBearer()
-
-
-def send_verification_email(email: str, verification_token: str):
-    """Send verification email to user."""
-
-    smtp_server = os.getenv("SMTP_SERVER")
-    smtp_port_str = os.getenv("SMTP_PORT")
-    smtp_username = os.getenv("SMTP_USERNAME")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-    app_url = os.getenv("APP_URL")
-
-    if not smtp_server:
-        raise ValueError("SMTP_SERVER environment variable is not set")
-    if not smtp_port_str:
-        raise ValueError("SMTP_PORT environment variable is not set")
-    if not smtp_username:
-        raise ValueError("SMTP_USERNAME environment variable is not set")
-    if not smtp_password:
-        raise ValueError("SMTP_PASSWORD environment variable is not set")
-    if not app_url:
-        raise ValueError("APP_URL environment variable is not set")
-
-    smtp_port = int(smtp_port_str)
-
-    try:
-        verification_url = f"{app_url}/auth/verify-email?token={verification_token}"
-        msg = MIMEMultipart()
-        msg["From"] = smtp_username
-        msg["To"] = email
-        msg["Subject"] = "Verify Your Email - ScanGenAI API"
-
-        body = f"""
-        Please verify your email by clicking the link below:
-        {verification_url}
-
-        """
-        msg.attach(MIMEText(body, "plain"))
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.error(
-            "Failed to send verification email: %s", type(exc).__name__, exc_info=True
-        )
 
 
 @router.post(
@@ -124,7 +75,9 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
         await db.refresh(new_user)
 
         # Send verification email
-        send_verification_email(user_data.email, verification_token)
+        send_verification_email(
+            user_data.email, verification_token, name=user_data.name
+        )
 
         logger.info("User registered successfully (ID: %s)", new_user.id)
 
@@ -226,13 +179,39 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
         ) from exc
 
 
+def _verification_page(state: str, status_code: int) -> HTMLResponse:
+    """Render the branded email-verification result page.
+
+    The API's default CSP blocks all inline styles, so this page gets its own
+    policy that only allows the nonce'd <style> block it ships with.
+    """
+    nonce = secrets.token_urlsafe(16)
+    html = render_template("verify_email_result.html", state=state, csp_nonce=nonce)
+    return HTMLResponse(
+        content=html,
+        status_code=status_code,
+        headers={
+            "Content-Security-Policy": (
+                f"default-src 'none'; style-src 'nonce-{nonce}'; "
+                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            )
+        },
+    )
+
+
 @router.get(
-    "/verify-email", response_model=MessageResponse, status_code=status.HTTP_200_OK
+    "/verify-email", response_class=HTMLResponse, status_code=status.HTTP_200_OK
 )
-async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
-    """Verify user email with verification token from query parameter."""
+async def verify_email(
+    token: Optional[str] = None, db: AsyncSession = Depends(get_db)
+) -> HTMLResponse:
+    """Verify user email with the token from the emailed link; renders an HTML page."""
     try:
         logger.info("Email verification attempt")
+
+        if not token:
+            logger.warning("Email verification failed: missing token")
+            return _verification_page("invalid", status.HTTP_400_BAD_REQUEST)
 
         stmt = select(User).where(User.verification_token == token_fingerprint(token))
         result = await db.execute(stmt)
@@ -240,14 +219,11 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
 
         if not user:
             logger.warning("Email verification failed: invalid token")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification token",
-            )
+            return _verification_page("invalid", status.HTTP_400_BAD_REQUEST)
 
         if bool(user.is_verified):
             logger.info("Email already verified (ID: %s)", user.id)
-            return MessageResponse(message="Email already verified")
+            return _verification_page("already_verified", status.HTTP_200_OK)
 
         # Update user as verified
         user.is_verified = True  # type: ignore[assignment]
@@ -257,15 +233,10 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
 
         logger.info("Email verified successfully (ID: %s)", user.id)
 
-        return MessageResponse(message="Email verified successfully")
-    except HTTPException:
-        raise
+        return _verification_page("verified", status.HTTP_200_OK)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Email verification error: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Email verification failed",
-        ) from exc
+        return _verification_page("error", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.post("/refresh", response_model=TokenResponse, status_code=status.HTTP_200_OK)

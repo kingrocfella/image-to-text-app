@@ -1,0 +1,203 @@
+{% set states = {
+  "verified": {
+    "tone": "success",
+    "eyebrow": "All set",
+    "title": "Your email is verified",
+    "message": "Thanks for confirming your address. Your " ~ brand_name ~ " account is now active and you can sign in.",
+    "hint": "You can close this tab and sign in to the " ~ brand_name ~ " app.",
+  },
+  "already_verified": {
+    "tone": "success",
+    "eyebrow": "Nothing to do",
+    "title": "Already verified",
+    "message": "This email address has already been confirmed. Your account is active and ready to use.",
+    "hint": "You can close this tab and sign in to the " ~ brand_name ~ " app.",
+  },
+  "invalid": {
+    "tone": "error",
+    "eyebrow": "Link not valid",
+    "title": "We couldn’t verify your email",
+    "message": "This verification link is invalid or has already been used. Check that you opened the full link from your most recent " ~ brand_name ~ " email.",
+    "hint": "Already clicked this link before? Your email may already be verified \u2014 try signing in.",
+  },
+  "error": {
+    "tone": "error",
+    "eyebrow": "Something went wrong",
+    "title": "Verification is unavailable",
+    "message": "We hit an unexpected problem while verifying your email. Please try the link again in a few minutes.",
+    "hint": "If the problem persists, try again later \u2014 your link stays valid until it\u2019s used.",
+  },
+} %}
+{% set s = states[state] %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ s.title }} &middot; {{ brand_name }}</title>
+  <style nonce="{{ csp_nonce }}">
+    :root {
+      --bg: #f3f4f8;
+      --bg-glow-1: rgba(99, 102, 241, 0.18);
+      --bg-glow-2: rgba(124, 58, 237, 0.14);
+      --card: #ffffff;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --subtle: #9ca3af;
+      --brand-1: #6366f1;
+      --brand-2: #7c3aed;
+      --success: #059669;
+      --success-soft: #d1fae5;
+      --error: #dc2626;
+      --error-soft: #fee2e2;
+      --shadow: 0 1px 2px rgba(17, 24, 39, 0.04), 0 24px 48px -12px rgba(17, 24, 39, 0.14);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0d14;
+        --bg-glow-1: rgba(99, 102, 241, 0.22);
+        --bg-glow-2: rgba(124, 58, 237, 0.18);
+        --card: #141722;
+        --border: #262a38;
+        --text: #f3f4f6;
+        --muted: #a1a7b5;
+        --subtle: #6b7280;
+        --success: #34d399;
+        --success-soft: rgba(52, 211, 153, 0.14);
+        --error: #f87171;
+        --error-soft: rgba(248, 113, 113, 0.14);
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 24px 48px -12px rgba(0, 0, 0, 0.6);
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      padding: 32px 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(60rem 30rem at 15% -10%, var(--bg-glow-1), transparent 60%),
+        radial-gradient(50rem 30rem at 110% 110%, var(--bg-glow-2), transparent 60%);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 36px; height: 36px; border-radius: 10px;
+      display: grid; place-items: center;
+      font-weight: 800; font-size: 18px; color: #fff;
+      background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
+      box-shadow: 0 6px 16px -6px rgba(99, 102, 241, 0.7);
+    }
+    .brand-name { font-size: 18px; font-weight: 700; letter-spacing: -0.2px; line-height: 1.1; }
+    .brand-sub { font-size: 12px; color: var(--muted); }
+
+    .card {
+      position: relative;
+      width: 100%;
+      max-width: 460px;
+      padding: 48px 40px 40px;
+      text-align: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      animation: rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    }
+    .card::before {
+      content: "";
+      position: absolute; inset: 0 0 auto 0; height: 5px;
+      background: linear-gradient(90deg, var(--brand-1), var(--brand-2));
+    }
+
+    .icon {
+      width: 76px; height: 76px; margin: 0 auto 24px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      animation: pop 0.5s 0.15s cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+    }
+    .tone-success .icon { background: var(--success-soft); color: var(--success); }
+    .tone-error .icon { background: var(--error-soft); color: var(--error); }
+    .icon svg { width: 38px; height: 38px; }
+    .icon path {
+      stroke-dasharray: 40;
+      stroke-dashoffset: 40;
+      animation: draw 0.45s 0.45s ease-out forwards;
+    }
+
+    .eyebrow {
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 1.2px; text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .tone-success .eyebrow { color: var(--success); }
+    .tone-error .eyebrow { color: var(--error); }
+
+    h1 { font-size: 26px; line-height: 1.25; font-weight: 800; letter-spacing: -0.4px; margin-bottom: 14px; }
+    p { font-size: 16px; line-height: 1.65; color: var(--muted); }
+
+    .hint {
+      margin-top: 28px; padding-top: 22px;
+      border-top: 1px solid var(--border);
+      font-size: 14px; color: var(--subtle);
+    }
+
+    footer { font-size: 12px; color: var(--subtle); }
+
+    @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    @keyframes pop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card, .icon, .icon path { animation: none; }
+      .icon path { stroke-dashoffset: 0; }
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 40px 24px 32px; }
+      h1 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="brand" aria-label="{{ brand_name }} by {{ company_name }}">
+    <div class="brand-mark" aria-hidden="true">S</div>
+    <div>
+      <div class="brand-name">{{ brand_name }}</div>
+      <div class="brand-sub">by {{ company_name }}</div>
+    </div>
+  </div>
+
+  <main class="card tone-{{ s.tone }}">
+    <div class="icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+        {% if s.tone == "success" %}
+        <path d="M5 12.5l4.5 4.5L19 7.5"/>
+        {% else %}
+        <path d="M7 7l10 10M17 7L7 17"/>
+        {% endif %}
+      </svg>
+    </div>
+    <div class="eyebrow">{{ s.eyebrow }}</div>
+    <h1>{{ s.title }}</h1>
+    <p>{{ s.message }}</p>
+    <p class="hint">
+      {{ s.hint }}
+    </p>
+  </main>
+
+  <footer>&copy; {{ year }} {{ company_name }}</footer>
+</body>
+</html>

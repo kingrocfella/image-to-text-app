@@ -1,0 +1,11 @@
+Hi{% if name %} {{ name }}{% endif %},
+
+Thanks for signing up for {{ brand_name }}. Please confirm your email address to activate your account:
+
+{{ verification_url }}
+
+Didn't create a {{ brand_name }} account? You can safely ignore this email - no account will be activated without this confirmation.
+
+--
+{{ company_name }} {{ brand_name }}
+This is an automated message; replies to this address aren't monitored.
