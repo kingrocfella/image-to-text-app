@@ -1,7 +1,7 @@
 import os
 
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from app.utils.constants import model_names, models_supported
 

@@ -1,14 +1,13 @@
 """Worker functions for processing sound-to-text jobs."""
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 import librosa
 import numpy as np
 
 from app.utils import delete_temp_file
 from app.utils.logger import logger
-
 
 _MODEL_NAME = "openai/whisper-medium"
 _PROCESSOR = None
@@ -22,7 +21,7 @@ def _load_model():
 
     if _PROCESSOR is None or _MODEL is None:
         import torch
-        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+        from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
         logger.info("Loading Whisper model: %s", _MODEL_NAME)
         _PROCESSOR = WhisperProcessor.from_pretrained(_MODEL_NAME)

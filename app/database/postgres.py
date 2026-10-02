@@ -1,12 +1,11 @@
 """PostgreSQL database connection and configuration."""
 
 import os
-
 from collections.abc import AsyncGenerator
 
 from dotenv import load_dotenv
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
 from app.utils.logger import logger
@@ -80,4 +79,3 @@ async def init_db():
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.error("Failed to initialize database tables: %s", exc, exc_info=True)
         raise
-

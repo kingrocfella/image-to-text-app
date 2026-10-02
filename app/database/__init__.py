@@ -6,16 +6,9 @@ from app.database.postgres import (
     Base,
     check_connection,
     engine,
-    get_db,
     get_database_url,
+    get_db,
     init_db,
-)
-
-# Redis exports
-from app.database.redis import (
-    get_redis_broker,
-    get_redis_url,
-    get_result_backend,
 )
 
 # Model exports
@@ -24,6 +17,13 @@ from app.database.postgres_models import (
     RefreshSession,
     TokenBlacklist,
     User,
+)
+
+# Redis exports
+from app.database.redis import (
+    get_redis_broker,
+    get_redis_url,
+    get_result_backend,
 )
 
 __all__ = [

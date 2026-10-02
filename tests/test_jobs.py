@@ -195,7 +195,7 @@ async def test_get_job_status_error(
 async def test_get_job_status_unauthorized(client: AsyncClient):
     """Test getting job status without authentication."""
     response = await client.get("/job/test-job-id")
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

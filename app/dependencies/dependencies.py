@@ -3,13 +3,13 @@
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import TokenBlacklist, User, get_db
 from app.utils import decode_token, token_fingerprint
 from app.utils.logger import logger
-from app.database import TokenBlacklist, User, get_db
 
 security = HTTPBearer()
 

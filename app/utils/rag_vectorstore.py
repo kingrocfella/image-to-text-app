@@ -12,10 +12,10 @@ from fastapi import HTTPException, UploadFile, status
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from qdrant_client import QdrantClient
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import PDFRequest, User
 from app.utils.file_utils import delete_temp_file

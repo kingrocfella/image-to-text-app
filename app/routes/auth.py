@@ -7,10 +7,13 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import RefreshSession, TokenBlacklist, User, get_db
+from app.dependencies import get_current_user
+from app.queues import mark_account_deleted_and_purge_jobs
 from app.schemas import (
     DeleteAccountRequest,
     MessageResponse,
@@ -30,9 +33,6 @@ from app.utils import (
 )
 from app.utils.email_utils import render_template, send_verification_email
 from app.utils.logger import logger
-from app.database import RefreshSession, TokenBlacklist, User, get_db
-from app.dependencies import get_current_user
-from app.queues import mark_account_deleted_and_purge_jobs
 from app.utils.rag_vectorstore import delete_user_pdf_data
 
 router = APIRouter(prefix="/auth", tags=["authentication"])

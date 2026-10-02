@@ -1,4 +1,5 @@
 """Pytest configuration and fixtures."""
+
 # pylint: disable=import-error,redefined-outer-name,unused-argument,unexpected-keyword-arg,no-member
 
 import os

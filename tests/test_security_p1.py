@@ -1,9 +1,9 @@
 """Regression tests for the P1 request, token, and upload boundaries."""
 
 import asyncio
+import uuid
 from io import BytesIO
 from types import SimpleNamespace
-import uuid
 
 import jwt
 import pytest
@@ -18,11 +18,11 @@ from app.middleware.security_middleware import (
 )
 from app.utils import (
     create_access_token,
+    rag_vectorstore,
     read_upload_limited,
     validate_image_content,
 )
 from app.utils.auth_utils import JWT_AUDIENCE, JWT_ISSUER, SECRET_KEY
-from app.utils import rag_vectorstore
 from app.utils.logger import sanitize_log_text
 
 

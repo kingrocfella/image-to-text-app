@@ -10,7 +10,6 @@ from PIL import Image
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-
 IMAGE_MAX_BYTES = int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
 AUDIO_MAX_BYTES = int(os.getenv("AUDIO_MAX_BYTES", str(20 * 1024 * 1024)))
 PDF_MAX_BYTES = int(os.getenv("PDF_MAX_BYTES", str(20 * 1024 * 1024)))

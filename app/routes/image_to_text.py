@@ -5,10 +5,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from app.dependencies import get_current_active_user
 from app.database import User
-from app.schemas import JobQueuedResponse
+from app.dependencies import get_current_active_user
 from app.queues import enqueue_image_job
+from app.schemas import JobQueuedResponse
 from app.utils import (
     IMAGE_MAX_BYTES,
     delete_temp_file,
@@ -17,7 +17,6 @@ from app.utils import (
     validate_image_file,
 )
 from app.utils.logger import logger
-
 
 router = APIRouter()
 

@@ -1,7 +1,7 @@
 """Main FastAPI application entry point."""
 
-import os
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv

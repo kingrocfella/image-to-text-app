@@ -23,7 +23,7 @@ async def test_convert_image_unauthorized(client: AsyncClient):
     response = await client.post(
         "/convert/image/text", files={"image": ("test.png", img_bytes, "image/png")}
     )
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -81,8 +81,10 @@ async def test_convert_image_job_queued(
     client: AsyncClient, authenticated_user: dict, tmp_path: Path
 ):
     """Test successful image-to-text job queueing."""
-    with patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue, \
-         patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path):
+    with (
+        patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue,
+        patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path),
+    ):
         mock_enqueue.return_value = "test-job-id-123"
 
         img = Image.new("RGB", (100, 100), color="red")
@@ -119,8 +121,10 @@ async def test_convert_image_different_formats(
     ]
 
     for format_name, mime_type in formats:
-        with patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue, \
-             patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path):
+        with (
+            patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue,
+            patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path),
+        ):
             mock_enqueue.return_value = "test-job-id-456"
 
             img = Image.new("RGB", (100, 100), color="red")
@@ -179,8 +183,10 @@ async def test_convert_image_enqueue_error(
     client: AsyncClient, authenticated_user: dict, tmp_path: Path
 ):
     """Test image conversion when enqueueing fails."""
-    with patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue, \
-         patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path):
+    with (
+        patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue,
+        patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path),
+    ):
         mock_enqueue.side_effect = Exception("Queue service unavailable")
 
         img = Image.new("RGB", (100, 100), color="red")
@@ -204,8 +210,10 @@ async def test_convert_image_empty_file(
     client: AsyncClient, authenticated_user: dict, tmp_path: Path
 ):
     """Test image conversion with empty file content."""
-    with patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue, \
-         patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path):
+    with (
+        patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue,
+        patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path),
+    ):
         empty_bytes = BytesIO(b"")
 
         response = await client.post(

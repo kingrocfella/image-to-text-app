@@ -3,12 +3,12 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.database import User
 from app.dependencies.dependencies import get_current_active_user
-from app.schemas import JobQueuedResponse
 from app.queues import enqueue_sound_job
+from app.schemas import JobQueuedResponse
 from app.utils import (
     AUDIO_MAX_BYTES,
     delete_temp_file,

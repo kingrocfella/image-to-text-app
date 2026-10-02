@@ -30,7 +30,7 @@ async def test_rag_with_pdf_unauthorized(client: AsyncClient):
         files={"pdf": ("test.pdf", pdf_file, "application/pdf")},
         data={"query": "What is this about?", "model": "openai"},
     )
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

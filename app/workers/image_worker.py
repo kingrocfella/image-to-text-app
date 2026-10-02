@@ -1,7 +1,7 @@
 """Worker functions for processing image-to-text jobs."""
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 from paddleocr import PaddleOCR
 
@@ -12,7 +12,6 @@ from app.utils import (
     extract_rec_texts,
 )
 from app.utils.logger import logger
-
 
 # Lazy-loaded OCR instance
 _OCR = None

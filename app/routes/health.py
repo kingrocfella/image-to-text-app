@@ -1,8 +1,10 @@
 """Health check route."""
+
 import os
+
+from dotenv import load_dotenv
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
 
 from app.utils.logger import logger
 

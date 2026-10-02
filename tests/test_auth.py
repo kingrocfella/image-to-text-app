@@ -173,4 +173,4 @@ async def test_delete_account_requires_current_password(
 async def test_access_protected_route_without_auth(client: AsyncClient):
     """Test accessing protected route without authentication."""
     response = await client.post("/convert/image/text")
-    assert response.status_code == 403
+    assert response.status_code == 401

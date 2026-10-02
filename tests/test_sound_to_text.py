@@ -1,7 +1,7 @@
 """Tests for sound to text conversion routes (queue-based API)."""
 
-from io import BytesIO
 import wave
+from io import BytesIO
 from unittest.mock import patch
 
 import pytest
@@ -30,7 +30,7 @@ async def test_convert_sound_unauthorized(client: AsyncClient):
     response = await client.post(
         "/convert/sound/text", files={"file": ("test.wav", audio_bytes, "audio/wav")}
     )
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
