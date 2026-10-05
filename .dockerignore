@@ -10,3 +10,12 @@ coverage.xml
 htmlcov
 logs
 tests
+
+# Secret-rotation lock and state (scripts/rotate-secrets.sh). The pending file
+# holds new credentials mid-rotation; neither may be committed or built in.
+.rotate-secrets/
+.secret-rotation/
+backups
+scripts
+docs
+*.md

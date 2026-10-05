@@ -6,21 +6,38 @@
 # `word-games-ollama` network, exactly as Letterbolt does. The local `ollama`
 # service is behind an opt-in profile for development machines only:
 #   docker compose --profile ollama up -d
+#
+# SQL migrations are applied automatically on API startup (see
+# app/database/postgres.py:run_sql_migrations), so there is no `migrate` target.
 
-.PHONY: up down restart logs worker-logs ps rebuild sh check-env init-env ensure-ollama-network \
-	install-dev format format-check lint type-check test check clean help \
-	backup backup-cron backup-cron-remove backup-log restore
+.PHONY: up down restart logs worker-logs log-files error-files ps rebuild sh check-env init-env \
+	ensure-ollama-network generate-routes check-routes install-dev format format-check lint \
+	type-check quality audit test check clean help \
+	backup backup-cron backup-cron-remove backup-log restore \
+	rotate-secrets rotate-cron rotate-cron-remove rotate-cron-log unlock-admin \
+	seed-reviewer-account
 
 COMPOSE = docker compose --env-file .env
+PYTHON ?= python
 LOG_TAIL ?= 200
+# Which service's saved log files log-files / error-files read: web or worker.
+SERVICE ?= web
+# tail has no "all": +1 means from the first line.
+FILE_TAIL = $(if $(filter all,$(LOG_TAIL)),+1,$(LOG_TAIL))
 
 help:
 	@echo "Stack:   make up | down | restart | logs | worker-logs | ps | rebuild | sh"
+	@echo "Logs:    make log-files | error-files [SERVICE=worker] [LOG_TAIL=500]   (saved; survive make up)"
 	@echo "Env:     make check-env | init-env"
+	@echo "Routes:  make generate-routes | check-routes   (mirror in ../image-text-react)"
 	@echo "Ollama:  make ensure-ollama-network   (shared Lost Vowels daemon)"
-	@echo "Quality: make format | format-check | lint | type-check | test | check"
+	@echo "Quality: make quality | audit | test | check   (check = the gates to pass before a change is done)"
+	@echo "         make format | format-check | lint | type-check   (full, pre-ratchet output)"
 	@echo "         make install-dev | clean"
 	@echo "Backups: make backup | restore | backup-cron | backup-cron-remove | backup-log"
+	@echo "Secrets: make rotate-secrets [FORCE=1] | rotate-cron | rotate-cron-remove | rotate-cron-log"
+	@echo "Admin:   make unlock-admin   (clear a console lockout)"
+	@echo "Stores:  make seed-reviewer-account EMAIL=...   (create or reset the review sign-in)"
 
 # ---------------------------------------------------------------------------
 # Stack
@@ -33,10 +50,12 @@ ensure-ollama-network:
 		docker network create --driver bridge --internal word-games-ollama >/dev/null
 
 ## Start the API + worker + datastores in the background (builds if needed).
+## The API has a Docker health check: a wrong database password stops it at
+## startup, so `make ps` shows it unhealthy rather than quietly half-working.
 up: ensure-ollama-network
 	chmod 600 .env
 	$(MAKE) check-env
-	$(COMPOSE) up -d --build
+	$(COMPOSE) up -d --build --remove-orphans
 
 ## Stop and remove the containers. Named volumes survive; `down -v` clears them.
 down:
@@ -46,13 +65,21 @@ down:
 restart:
 	$(COMPOSE) restart web
 
-## Follow API logs. Override history with LOG_TAIL=500 or LOG_TAIL=all.
+## Follow API logs (stdout). Override history with LOG_TAIL=500 or LOG_TAIL=all.
 logs:
 	$(COMPOSE) logs --follow --tail=$(LOG_TAIL) web
 
-## Follow the background worker's logs.
+## Follow the background worker's logs (stdout).
 worker-logs:
 	$(COMPOSE) logs --follow --tail=$(LOG_TAIL) worker
+
+## Follow the saved info.log of SERVICE (web by default; SERVICE=worker).
+log-files:
+	$(COMPOSE) exec $(SERVICE) tail -n $(FILE_TAIL) -F /app/logs/info.log
+
+## Follow the saved errors.log of SERVICE (web by default; SERVICE=worker).
+error-files:
+	$(COMPOSE) exec $(SERVICE) tail -n $(FILE_TAIL) -F /app/logs/errors.log
 
 ## Show container status.
 ps:
@@ -70,127 +97,75 @@ sh:
 # Env
 # ---------------------------------------------------------------------------
 
-## .env is the only environment file allowed anywhere in this repo, it must
-## be mode 0600, and it must carry exactly one entry for every key init-env
-## emits — so a variable the code starts reading can never be silently absent.
+## .env is the only environment file allowed anywhere in this workspace, mode
+## 0600, with exactly one entry for every key the code reads and no key that
+## nothing reads; and app/config.py is the only module that reads the
+## environment (AGENTS.md §1).
 check-env:
-	@test -f .env || (echo "check-env: .env is missing; run 'make init-env'" >&2; exit 1)
-	@extra=$$(find . -name '.env' -o -name '.env.*' 2>/dev/null \
-		| grep -Ev '(^|/)(node_modules|\.git|\.venv|venv|\.next|\.claude)/' \
-		| grep -v '^\./.env$$' || true); \
-	if [ -n "$$extra" ]; then \
-		echo "check-env: only .env is allowed; remove:" >&2; echo "$$extra" | sed 's/^/  /' >&2; exit 1; \
-	fi
-	@mode=$$(stat -c '%a' .env 2>/dev/null || stat -f '%Lp' .env); \
-	if [ "$$mode" != "600" ]; then \
-		echo "check-env: .env permissions are $$mode; expected 600" >&2; exit 1; \
-	fi
-	@bad=$$(grep -oE "^[[:space:]]+['\"][A-Z][A-Z0-9_]*=" Makefile | grep -oE "[A-Z][A-Z0-9_]*" | sort -u \
-		| while read -r key; do \
-			[ "$$(grep -c "^$$key=" .env)" -eq 1 ] || echo "  $$key"; \
-		done); \
-	if [ -n "$$bad" ]; then \
-		echo "check-env: .env needs exactly one entry per init-env key; missing or duplicated:" >&2; \
-		echo "$$bad" >&2; exit 1; \
-	fi
-	@echo "check-env: clean — .env is complete and mode 0600"
+	@./scripts/check-env.sh
 
-## Create the one canonical .env with safe local defaults (only if missing).
-## SECRET_KEY / OPENAI_PASS / POSTGRES_PASSWORD are generated. SMTP and the
-## cloud model keys must be filled in by hand — the code refuses placeholders.
+## Create the one canonical .env with safe local defaults (refuses to overwrite).
 init-env:
-	@if [ -f .env ]; then \
-		echo "init-env: .env already exists; leaving it untouched"; \
-	else \
-		printf '%s\n' \
-			'ENVIRONMENT=dev' \
-			'APP_HOST=0.0.0.0' \
-			'APP_PORT=8000' \
-			'APP_DEBUG=true' \
-			'APP_URL=http://127.0.0.1:8000' \
-			'API_HOST_PORT=8000' \
-			"SECRET_KEY=$$(openssl rand -hex 32)" \
-			'JWT_ISSUER=scangenai-api' \
-			'JWT_AUDIENCE=scangenai-client' \
-			'ACCESS_TOKEN_EXPIRE_HOURS=1' \
-			'REFRESH_TOKEN_EXPIRE_DAYS=1' \
-			'CORS_ALLOWED_ORIGINS=' \
-			'MAX_REQUEST_BODY_BYTES=26214400' \
-			'REQUEST_TIMEOUT_SECONDS=30' \
-			'IMAGE_MAX_BYTES=10485760' \
-			'IMAGE_MAX_PIXELS=40000000' \
-			'IMAGE_MAX_FRAMES=20' \
-			'AUDIO_MAX_BYTES=20971520' \
-			'PDF_MAX_BYTES=20971520' \
-			'PDF_MAX_PAGES=100' \
-			'RAG_RETENTION_DAYS=30' \
-			'JOB_TYPE_TTL_DAYS=7' \
-			'POSTGRES_USER=scangenai' \
-			"POSTGRES_PASSWORD=$$(openssl rand -hex 24)" \
-			'POSTGRES_DB=scangenai' \
-			'POSTGRES_HOST=postgres' \
-			'POSTGRES_PORT=5432' \
-			'POSTGRES_HOST_PORT=5433' \
-			'REDIS_HOST=redis' \
-			'REDIS_PORT=6379' \
-			'REDIS_DB=0' \
-			'REDIS_HOST_PORT=6382' \
-			'QDRANT_URL=http://qdrant:6333' \
-			'QDRANT_HOST_PORT=6333' \
-			'OLLAMA_URL=http://ollama:11434' \
-			'OLLAMA_MODEL=llama3.2:3b' \
-			'OLLAMA_TEMPERATURE=0.7' \
-			'OLLAMA_NUM_PREDICT=500' \
-			'OLLAMA_KEEP_ALIVE=10m' \
-			'OLLAMA_HOST_PORT=11438' \
-			'WORKER_THREADS=8' \
-			'SMTP_SERVER=change-me' \
-			'SMTP_PORT=587' \
-			'SMTP_USERNAME=change-me' \
-			'SMTP_PASSWORD=change-me' \
-			"OPENAI_PASS=$$(openssl rand -hex 16)" \
-			'GEMINI_API_KEY=' \
-			'DEEPSEEK_API_KEY=' \
-			'LOG_LEVEL=INFO' \
-			'LOG_DIR=/app/logs' > .env; \
-		chmod 600 .env; \
-		echo "init-env: wrote .env with safe local defaults"; \
-		echo "init-env: fill in the SMTP settings and any cloud model keys before 'make up'"; \
-	fi
+	@./scripts/init-env.sh
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+## Regenerate ../image-text-react/src/api/routes.generated.ts from app/paths.py.
+generate-routes:
+	$(PYTHON) -m scripts.generate_routes
+
+## Fail if the mobile route mirror no longer matches app/paths.py.
+check-routes:
+	$(PYTHON) -m scripts.generate_routes --check
 
 # ---------------------------------------------------------------------------
 # Quality / tests
 # ---------------------------------------------------------------------------
 
+## The API-layer tooling only. The OCR / speech / RAG stack in requirements.txt
+## is several gigabytes and is not needed for `make check`: the tests mock it.
 install-dev:
-	pip install -r requirements.txt
-	pip install -r requirements-dev.txt
+	$(PYTHON) -m pip install -r requirements-dev.txt
 
 format:
 	@echo "Running isort..."
-	isort app/ tests/
+	$(PYTHON) -m isort app/ tests/ scripts/
 	@echo "Running black..."
-	black app/ tests/
+	$(PYTHON) -m black app/ tests/ scripts/
 
 format-check:
 	@echo "Checking isort..."
-	isort --check-only app/ tests/
+	$(PYTHON) -m isort --check-only app/ tests/ scripts/
 	@echo "Checking black..."
-	black --check app/ tests/
+	$(PYTHON) -m black --check app/ tests/ scripts/
 
 lint:
 	@echo "Running flake8..."
-	flake8 app/
+	$(PYTHON) -m flake8 app/
 
 type-check:
 	@echo "Running mypy..."
-	mypy app/
+	$(PYTHON) -m mypy app/
 
 test:
 	@echo "Running pytest..."
-	pytest
+	$(PYTHON) -m pytest
 
-check: format-check lint type-check test
+## flake8, mypy, black and isort against the recorded baseline: fails on new
+## findings, and on fixed ones until the baseline is lowered.
+quality:
+	$(PYTHON) -m scripts.quality_ratchet
+
+## Known vulnerabilities in everything the image installs. Zero, no exceptions:
+## fix an advisory rather than excuse it.
+audit:
+	$(PYTHON) -m pip_audit -r requirements.txt --no-deps --disable-pip
+
+## Everything a change must pass before it is done (AGENTS.md §10). Set
+## TEST_DATABASE_URL to a throwaway database to include the PostgreSQL tests.
+check: check-env quality check-routes test audit
 	@echo "All checks passed!"
 
 clean:
@@ -232,3 +207,39 @@ restore:
 	@test "$(CONFIRM)" = "restore" || (echo "Refusing restore: pass CONFIRM=restore" >&2; exit 1)
 	@test -n "$(BACKUP)" || (echo "Refusing restore: pass BACKUP=/absolute/path/file.dump" >&2; exit 1)
 	./scripts/restore-db.sh "$(BACKUP)" --confirm
+
+# ---------------------------------------------------------------------------
+# Secrets and admin
+# ---------------------------------------------------------------------------
+
+## Rotate POSTGRES_PASSWORD, SECRET_KEY and (when set) ADMIN_DASHBOARD_TOKEN
+## against the running stack, then `make up`. The old SECRET_KEY becomes
+## SECRET_KEY_PREVIOUS, so nobody is signed out. Never change SECRET_KEY by
+## hand. FORCE=1 rotates inside the refresh-token overlap window.
+rotate-secrets:
+	@./scripts/rotate-secrets.sh $(if $(FORCE),--force,)
+
+## Daily cron check that backs up, then rotates, once
+## SECRET_ROTATION_INTERVAL_DAYS have passed. Runs at 06:20 host time.
+rotate-cron:
+	SCHEDULE="$(SCHEDULE)" ./scripts/install-rotate-cron.sh
+
+## Remove the scheduled rotation cron entry.
+rotate-cron-remove:
+	./scripts/install-rotate-cron.sh --uninstall
+
+## Show what the scheduled rotations have been doing.
+rotate-cron-log:
+	@tail -n 60 .secret-rotation/rotate.log 2>/dev/null || echo "No scheduled rotation has run yet."
+
+## Clear the admin console's failed sign-in count and lockout.
+unlock-admin:
+	@$(COMPOSE) exec -T postgres sh -c \
+		'psql -X -q -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "UPDATE admin_security SET failed_attempts = 0, locked_until = NULL WHERE id = 1"'
+	@echo "unlock-admin: console lockout cleared"
+
+## Create the store reviewer account, or reset its password. Prompts for the
+## password; it is an ordinary verified account with no special rights.
+seed-reviewer-account:
+	@test -n "$(EMAIL)" || (echo "pass EMAIL=reviewer@example.com" >&2; exit 1)
+	$(COMPOSE) exec web python -m app.seed_reviewer "$(EMAIL)"

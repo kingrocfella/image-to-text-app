@@ -89,59 +89,23 @@ async def test_rag_with_pdf_missing_query(
 
 
 @pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.verify_openai_password")
-async def test_rag_with_pdf_incorrect_openai_pass(
-    mock_verify_password,
+async def test_rag_with_pdf_rejects_a_model_with_no_provider_key(
     client: AsyncClient,
     authenticated_user: dict,
 ):
-    """Test RAG with PDF with incorrect OpenAI password."""
-    mock_verify_password.return_value = False
+    """A model is requestable only when this deployment can actually call it."""
+    pdf_file = BytesIO(_valid_pdf_bytes())
 
-    pdf_content = _valid_pdf_bytes()
-    pdf_file = BytesIO(pdf_content)
-
+    # conftest configures OpenAI and Gemini keys but leaves DeepSeek empty.
     response = await client.post(
-        "/pdf/get/response",
+        "/v1/pdf/get/response",
         files={"pdf": ("test.pdf", pdf_file, "application/pdf")},
-        data={
-            "query": "What is this about?",
-            "model": "openai",
-            "openai_pass": "wrong-password",
-        },
+        data={"query": "What is this about?", "model": "deepseek"},
         headers=authenticated_user["headers"],
     )
 
     assert response.status_code == 400
-    data = response.json()
-    assert "detail" in data
-    assert "password" in data["detail"].lower() or "incorrect" in data["detail"].lower()
-
-
-@pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.verify_openai_password")
-async def test_rag_with_pdf_missing_openai_pass(
-    mock_verify_password,
-    client: AsyncClient,
-    authenticated_user: dict,
-):
-    """Test RAG with PDF with missing OpenAI password when model is openai."""
-    mock_verify_password.return_value = False
-
-    pdf_content = _valid_pdf_bytes()
-    pdf_file = BytesIO(pdf_content)
-
-    response = await client.post(
-        "/pdf/get/response",
-        files={"pdf": ("test.pdf", pdf_file, "application/pdf")},
-        data={"query": "What is this about?", "model": "openai"},
-        headers=authenticated_user["headers"],
-    )
-
-    assert response.status_code == 400
-    data = response.json()
-    assert "detail" in data
-    assert "password" in data["detail"].lower() or "incorrect" in data["detail"].lower()
+    assert "not available" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -242,18 +206,15 @@ async def test_rag_with_pdf_success_with_past_request_id(
 
 
 @pytest.mark.asyncio
-@patch("app.routes.rag_with_pdf.verify_openai_password")
 @patch("app.routes.rag_with_pdf.Path.mkdir")
 @patch("app.routes.rag_with_pdf.enqueue_rag_job")
-async def test_rag_with_pdf_success_with_openai(
+async def test_rag_with_pdf_success_with_a_cloud_model(
     mock_enqueue,
     _mock_mkdir,
-    mock_verify_password,
     client: AsyncClient,
     authenticated_user: dict,
 ):
-    """Test successful RAG job enqueue with OpenAI model."""
-    mock_verify_password.return_value = True
+    """Test successful RAG job enqueue with a cloud model a free account may use."""
     mock_enqueue.return_value = "test-job-id-789"
 
     pdf_content = _valid_pdf_bytes()
@@ -266,11 +227,7 @@ async def test_rag_with_pdf_success_with_openai(
         response = await client.post(
             "/pdf/get/response",
             files={"pdf": ("test.pdf", pdf_file, "application/pdf")},
-            data={
-                "query": "What is this about?",
-                "model": "openai",
-                "openai_pass": "test-pass",
-            },
+            data={"query": "What is this about?", "model": "gemini"},
             headers=authenticated_user["headers"],
         )
 
@@ -279,10 +236,8 @@ async def test_rag_with_pdf_success_with_openai(
     assert data["message_id"] == "test-job-id-789"
     mock_enqueue.assert_called_once()
 
-    # Authorization is decided by the API; the shared secret never enters Redis.
     call_args = mock_enqueue.call_args[0][0]
-    assert call_args["model"] == "openai"
-    assert "openai_pass" not in call_args
+    assert call_args["model"] == "gemini"
 
 
 @pytest.mark.asyncio

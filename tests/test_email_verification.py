@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import override_settings
 from app.database import User
 from app.utils import get_password_hash, token_fingerprint
 from app.utils.email_utils import render_template, send_verification_email
@@ -89,19 +90,18 @@ def test_verification_email_escapes_user_name():
 
 
 @patch("app.utils.email_utils.smtplib.SMTP")
-def test_send_verification_email_is_multipart(mock_smtp, monkeypatch):
-    for key, value in {
-        "SMTP_SERVER": "smtp.example.com",
-        "SMTP_PORT": "587",
-        "SMTP_USERNAME": "no-reply@example.com",
-        "SMTP_PASSWORD": "pw",
-        "APP_URL": "https://api.example.com/",
-    }.items():
-        monkeypatch.setenv(key, value)
+def test_send_verification_email_is_multipart(mock_smtp):
     server = MagicMock()
     mock_smtp.return_value.__enter__.return_value = server
 
-    send_verification_email("ada@example.com", "tok123", name="Ada")
+    with override_settings(
+        smtp_server="smtp.example.com",
+        smtp_port=587,
+        smtp_username="no-reply@example.com",
+        smtp_password="pw",
+        app_url="https://api.example.com",
+    ):
+        send_verification_email("ada@example.com", "tok123", name="Ada")
 
     msg = server.send_message.call_args.args[0]
     assert msg["To"] == "ada@example.com"

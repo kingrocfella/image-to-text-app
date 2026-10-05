@@ -3,12 +3,25 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import User
-from app.dependencies.dependencies import get_current_active_user
-from app.queues import enqueue_sound_job
+from app.database import User, get_db
+from app.dependencies import get_current_active_user
+from app.paths import Api
+from app.queues import JOB_TYPE_SOUND, enqueue_sound_job
 from app.schemas import JobQueuedResponse
+from app.services import quota
+from app.services.billing.entitlement import get_entitlement
+from app.services.job_runs import record_job_queued
 from app.utils import (
     AUDIO_MAX_BYTES,
     delete_temp_file,
@@ -16,6 +29,7 @@ from app.utils import (
     validate_sound_content,
 )
 from app.utils.logger import logger
+from app.utils.rate_limit import limiter
 from app.utils.utils import validate_sound_file
 
 router = APIRouter()
@@ -25,23 +39,26 @@ SHARED_AUDIO_DIR = Path("/app/shared_files")
 
 
 @router.post(
-    "/convert/sound/text",
+    Api.SOUND_TO_TEXT,
     status_code=status.HTTP_202_ACCEPTED,
     response_model=JobQueuedResponse,
 )
+@limiter.limit("30/hour")
 async def transcribe_sound_to_text(
+    request: Request,  # pylint: disable=unused-argument
     file: UploadFile = File(...),
-    _current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ) -> JobQueuedResponse:
     """Queue a sound-to-text conversion job.
 
     Returns a job ID that can be used to check the status via GET /job/{message_id}.
     """
-    logger.info("Sound-to-text request (user ID: %s)", _current_user.id)
+    logger.info("Sound-to-text request (user ID: %s)", current_user.id)
 
     # Validate sound file
     if not validate_sound_file(file):
-        logger.warning("Invalid sound upload metadata (user ID: %s)", _current_user.id)
+        logger.warning("Invalid sound upload metadata (user ID: %s)", current_user.id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid sound file.",
@@ -65,20 +82,23 @@ async def transcribe_sound_to_text(
         job_data = {
             "audio_file_path": audio_file_path,
             "filename": file.filename or "audio.wav",
-            "user_id": str(_current_user.id),
+            "user_id": str(current_user.id),
         }
+        entitlement = await get_entitlement(db, current_user.id)  # type: ignore[arg-type]
+        await quota.consume(db, current_user.id, quota.KIND_SOUND, pro=entitlement.pro)
         job_id = enqueue_sound_job(job_data)
+        record_job_queued(db, job_id, current_user.id, JOB_TYPE_SOUND)
 
         logger.info(
             "Sound-to-text job enqueued (user ID: %s) - Job ID: %s",
-            _current_user.id,
+            current_user.id,
             job_id,
         )
 
         return JobQueuedResponse(
             message_id=job_id,
             status="queued",
-            message="Job has been queued for processing. Use GET /job/{message_id} to check status.",
+            message="Job has been queued for processing. Poll the job endpoint with the message_id to check status.",
         )
 
     except HTTPException:

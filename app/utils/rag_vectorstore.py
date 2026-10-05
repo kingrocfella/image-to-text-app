@@ -1,7 +1,6 @@
 """Utility functions for RAG vectorstore operations."""
 
 import asyncio
-import os
 import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -17,15 +16,30 @@ from qdrant_client import QdrantClient
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import PDFRequest, User
 from app.utils.file_utils import delete_temp_file
 from app.utils.logger import logger
 from app.utils.upload_security import PDF_MAX_BYTES, validate_pdf_content
 
-QDRANT_URL = os.getenv("QDRANT_URL")
-RAG_RETENTION_DAYS = int(os.getenv("RAG_RETENTION_DAYS", "30"))
-if RAG_RETENTION_DAYS <= 0:
-    raise RuntimeError("RAG_RETENTION_DAYS must be positive")
+_settings = get_settings()
+QDRANT_URL = _settings.qdrant_url
+RAG_RETENTION_DAYS = _settings.rag_retention_days
+# Collections created before the model became configurable used this one, and
+# a collection can only be searched with the model that built it (the vector
+# sizes differ), so each pdf_requests row records its own.
+LEGACY_EMBEDDING_MODEL = "text-embedding-3-large"
+
+
+def _embeddings(model: str | None = None) -> OpenAIEmbeddings:
+    """Document embeddings. Every PDF question needs these, whatever model answers."""
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for PDF embeddings")
+    return OpenAIEmbeddings(
+        model=model or settings.embedding_model,
+        api_key=settings.openai_api_key,  # type: ignore[arg-type]
+    )
 
 
 async def delete_vector_collections(collection_names: list[str]) -> None:
@@ -108,8 +122,8 @@ async def load_existing_vectorstore(
     collection_name = str(pdf_request.collection_name)
     logger.info("Loading vectorstore for collection: %s", collection_name)
 
-    # Load existing vectorstore
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+    # Load existing vectorstore with the model that built it
+    embeddings = _embeddings(str(pdf_request.embedding_model or LEGACY_EMBEDDING_MODEL))
     qdrant_client = QdrantClient(url=QDRANT_URL)
     vectorstore = QdrantVectorStore(
         collection_name=collection_name,
@@ -216,7 +230,8 @@ async def process_new_pdf(
         collection_name = f"pdf_collection_{current_request_id.replace('-', '')}"
 
         # Create vector embeddings
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+        embedding_model = get_settings().embedding_model
+        embeddings = _embeddings(embedding_model)
 
         # Create vector store and store embeddings and documents in Qdrant
         vectorstore = await asyncio.to_thread(
@@ -235,6 +250,7 @@ async def process_new_pdf(
             collection_name=collection_name,
             user_id=user_id,
             filename=pdf_filename,
+            embedding_model=embedding_model,
         )
         db.add(pdf_request)
         await db.commit()

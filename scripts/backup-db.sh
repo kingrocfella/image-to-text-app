@@ -47,6 +47,16 @@ mv "$temporary" "$output"
 trap - EXIT HUP INT TERM
 chmod 600 "$output"
 
+# Record the verified dump so the API's operations monitor and admin console can
+# see backups are current (the containers cannot see this directory). Failing to
+# record does not fail the backup; the monitor then reports it as stale.
+size=$(wc -c <"$output" | tr -d ' ')
+printf '%s\n' "INSERT INTO backup_runs (filename, size_bytes) VALUES (:'name', :size);" |
+  docker compose --project-directory "$repo_dir" exec -T postgres sh -c \
+    'psql -X -q -v ON_ERROR_STOP=1 -v name="$1" -v size="$2" -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+    sh "$(basename "$output")" "$size" >/dev/null ||
+  printf '%s\n' 'warning: the backup is valid but could not be recorded in backup_runs' >&2
+
 # ---------------------------------------------------------------------------
 # Qdrant vector collections.
 #

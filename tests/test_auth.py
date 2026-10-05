@@ -17,7 +17,7 @@ async def test_register_success(
     assert response.status_code == 201
     data = response.json()
     assert "message" in data
-    assert "registered successfully" in data["message"].lower()
+    assert "verification email" in data["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -128,9 +128,11 @@ async def test_logout_success(client: AsyncClient, authenticated_user: dict):
 
 
 @pytest.mark.asyncio
+@patch("app.routes.auth.mark_account_deleted_and_purge_jobs")
 @patch("app.routes.auth.delete_user_pdf_data", new_callable=AsyncMock)
 async def test_delete_account_erases_user_and_invalidates_token(
     mock_delete_pdf_data,
+    mock_purge_jobs,
     client: AsyncClient,
     authenticated_user: dict,
 ):
@@ -143,6 +145,7 @@ async def test_delete_account_erases_user_and_invalidates_token(
     )
     assert response.status_code == 200
     mock_delete_pdf_data.assert_awaited_once()
+    mock_purge_jobs.assert_called_once()
 
     retry = await client.post(
         "/auth/logout",

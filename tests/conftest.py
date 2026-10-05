@@ -3,64 +3,139 @@
 # pylint: disable=import-error,redefined-outer-name,unused-argument,unexpected-keyword-arg,no-member
 
 import os
-from contextlib import asynccontextmanager
+import sys
+from importlib import import_module
 from io import BytesIO
 from typing import AsyncGenerator
+from unittest.mock import MagicMock
 
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing-only-32-bytes")
-os.environ.setdefault("OPENAI_PASS", "test-openai-password")
-os.environ.setdefault("ENVIRONMENT", "test")
-os.environ.setdefault("POSTGRES_USER", "test")
-os.environ.setdefault("POSTGRES_PASSWORD", "test")
-os.environ.setdefault("POSTGRES_DB", "test")
-os.environ.setdefault("POSTGRES_HOST", "127.0.0.1")
-os.environ.setdefault("POSTGRES_PORT", "5432")
+# The suite must not depend on, or be changed by, a developer's real .env:
+# these are set before app.config loads, and real process variables win over
+# the file. TEST_DATABASE_URL (a throwaway PostgreSQL database) is the one
+# value taken from the environment.
+os.environ.update(
+    {
+        "ENVIRONMENT": "dev",
+        "APP_URL": "http://test",
+        "SECRET_KEY": "test-secret-key-for-testing-only-32-bytes",
+        "SECRET_KEY_PREVIOUS": "",
+        "POSTGRES_USER": "test",
+        "POSTGRES_PASSWORD": "test",
+        "POSTGRES_DB": "test",
+        "POSTGRES_HOST": "127.0.0.1",
+        "POSTGRES_PORT": "5432",
+        "LOG_TO_FILE": "false",
+        "MINIMUM_APP_VERSION": "0.0.0",
+        "TRUST_PROXY_HEADERS": "false",
+        "OPENAI_API_KEY": "test-openai-key",
+        "GEMINI_API_KEY": "test-gemini-key",
+        "DEEPSEEK_API_KEY": "",
+        "ANTHROPIC_API_KEY": "test-anthropic-key",
+        "FREE_CLOUD_MODELS": "gemini,deepseek",
+        "PRO_QUOTA_IMAGE_MONTHLY": "1000",
+        "PRO_QUOTA_SOUND_MONTHLY": "300",
+        "PRO_QUOTA_PDF_MONTHLY": "500",
+        "PRO_QUOTA_CLOUD_MODEL_MONTHLY": "300",
+        "BILLING_PROVIDER": "dev",
+        "GOOGLE_WEB_CLIENT_ID": "test-web-client.apps.googleusercontent.com",
+        "IOS_BUNDLE_ID": "com.leonfrontier.scangenai",
+        "ANDROID_PACKAGE_NAME": "com.leonfrontier.scangenai",
+        "QUOTA_IMAGE_MONTHLY": "300",
+        "QUOTA_SOUND_MONTHLY": "100",
+        "QUOTA_PDF_MONTHLY": "200",
+        "QUOTA_CLOUD_MODEL_MONTHLY": "50",
+        "SMTP_SERVER": "",
+        "SMTP_USERNAME": "",
+        "SMTP_PASSWORD": "",
+        "NOTIFY_EMAILS_ENABLED": "false",
+        "ADMIN_DASHBOARD_TOKEN": "",
+    }
+)
+
+# The OCR / speech / RAG stack is several gigabytes. Nothing in this suite runs
+# a model, so where it is not installed the modules are replaced by mocks and
+# the API layer can still be imported and tested.
+for _heavy in (
+    "paddleocr",
+    "librosa",
+    "torch",
+    "transformers",
+    "langchain_community",
+    "langchain_community.document_loaders",
+    "langchain_openai",
+    "langchain_qdrant",
+    "langchain_text_splitters",
+):
+    try:
+        import_module(_heavy)
+    except Exception:  # pylint: disable=broad-exception-caught
+        sys.modules[_heavy] = MagicMock()
 
 import pytest
-from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from PIL import Image
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.database import Base, User, get_db
-from app.routes import router as api_router
+from app.database.postgres import init_db
+from app.main import app as test_app
 from app.utils import get_password_hash
-
-try:
-    from httpx import ASGITransport
-except ImportError:
-    ASGITransport = None
+from app.utils.rate_limit import limiter
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+# With TEST_DATABASE_URL the suite runs against real PostgreSQL, built exactly
+# as startup builds it (model tables, then every migration), and the rate
+# limiter, admin console and operations tests run too. Without it everything
+# that can run on SQLite does, and the PostgreSQL-only tests are skipped.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "").strip()
+USING_POSTGRES = bool(TEST_DATABASE_URL)
+
+requires_postgres = pytest.mark.skipif(
+    not USING_POSTGRES, reason="TEST_DATABASE_URL is not set"
+)
+
+if USING_POSTGRES:
+    test_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+else:
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 TestSessionLocal = async_sessionmaker(
     test_engine, class_=AsyncSession, expire_on_commit=False
 )
 
 
-@asynccontextmanager
-async def test_lifespan(_app: FastAPI):
-    """Mock lifespan for testing."""
-    yield
-
-
-test_app = FastAPI(title="Test ScanGenAI API", lifespan=test_lifespan)
-test_app.include_router(api_router)
+async def _fresh_postgres_schema() -> None:
+    async with test_engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await init_db(test_engine)
 
 
 @pytest.fixture(scope="function")
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
+async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     """Create a database session for testing."""
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if USING_POSTGRES:
+        await _fresh_postgres_schema()
+        monkeypatch.setattr(limiter, "_session_factory", TestSessionLocal)
+    else:
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async def _unlimited(*_args, **_kwargs) -> None:
+            return None
+
+        # rate_limit_buckets is PostgreSQL-only SQL; tests/test_rate_limit.py
+        # covers the limiter itself when TEST_DATABASE_URL is set.
+        monkeypatch.setattr(limiter, "hit", _unlimited)
     async with TestSessionLocal() as session:
         yield session
         await session.rollback()
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    if not USING_POSTGRES:
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest.fixture(scope="function")
@@ -68,19 +143,18 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     """Create a test client."""
 
     async def override_get_db():
-        yield db_session
+        # Same contract as the real get_db: commit on success, roll back on error.
+        try:
+            yield db_session
+            await db_session.commit()
+        except Exception:
+            await db_session.rollback()
+            raise
 
     test_app.dependency_overrides[get_db] = override_get_db
-    try:
-        if ASGITransport is not None:
-            transport = ASGITransport(app=test_app)  # type: ignore[call-arg]
-            async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                yield ac
-        else:
-            raise AttributeError("ASGITransport not available")
-    except (TypeError, AttributeError):
-        async with AsyncClient(app=test_app, base_url="http://test") as ac:  # type: ignore[call-arg]
-            yield ac
+    transport = ASGITransport(app=test_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
     test_app.dependency_overrides.clear()
 
 
@@ -114,7 +188,7 @@ async def registered_user(db_session: AsyncSession, test_user_data: dict):
 async def authenticated_user(client: AsyncClient, registered_user):
     """Fixture for an authenticated user."""
     response = await client.post(
-        "/auth/login",
+        "/v1/auth/login",
         json={"email": registered_user.email, "password": "testpassword123"},
     )
     assert response.status_code == 200

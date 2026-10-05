@@ -13,9 +13,11 @@ from app.database.postgres import (
 
 # Model exports
 from app.database.postgres_models import (
+    JobRun,
     PDFRequest,
     RefreshSession,
     TokenBlacklist,
+    UsageCounter,
     User,
 )
 
@@ -41,4 +43,6 @@ __all__ = [
     "TokenBlacklist",
     "RefreshSession",
     "PDFRequest",
+    "UsageCounter",
+    "JobRun",
 ]

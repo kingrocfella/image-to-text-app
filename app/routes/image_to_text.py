@@ -3,12 +3,25 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import User
+from app.database import User, get_db
 from app.dependencies import get_current_active_user
-from app.queues import enqueue_image_job
+from app.paths import Api
+from app.queues import JOB_TYPE_IMAGE, enqueue_image_job
 from app.schemas import JobQueuedResponse
+from app.services import quota
+from app.services.billing.entitlement import get_entitlement
+from app.services.job_runs import record_job_queued
 from app.utils import (
     IMAGE_MAX_BYTES,
     delete_temp_file,
@@ -17,6 +30,7 @@ from app.utils import (
     validate_image_file,
 )
 from app.utils.logger import logger
+from app.utils.rate_limit import limiter
 
 router = APIRouter()
 
@@ -25,25 +39,28 @@ SHARED_IMAGE_DIR = Path("/app/shared_files")
 
 
 @router.post(
-    "/convert/image/text",
+    Api.IMAGE_TO_TEXT,
     status_code=status.HTTP_202_ACCEPTED,
     response_model=JobQueuedResponse,
 )
+@limiter.limit("60/hour")
 async def convert_image_to_text(
+    request: Request,  # pylint: disable=unused-argument
     image: UploadFile = File(...),
-    _current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ) -> JobQueuedResponse:
     """Queue an image-to-text conversion job.
 
     Returns a job ID that can be used to check the status via GET /job/{message_id}.
     """
-    logger.info("Image-to-text request (user ID: %s)", _current_user.id)
+    logger.info("Image-to-text request (user ID: %s)", current_user.id)
 
     # Validate that the uploaded file is an image
     try:
         validate_image_file(image)
-    except HTTPException as http_exc:
-        logger.warning("Invalid image upload (user ID: %s)", _current_user.id)
+    except HTTPException:
+        logger.warning("Invalid image upload (user ID: %s)", current_user.id)
         raise
 
     image_file_path: str | None = None
@@ -64,20 +81,23 @@ async def convert_image_to_text(
         job_data = {
             "image_file_path": image_file_path,
             "filename": image.filename or "image.png",
-            "user_id": str(_current_user.id),
+            "user_id": str(current_user.id),
         }
+        entitlement = await get_entitlement(db, current_user.id)  # type: ignore[arg-type]
+        await quota.consume(db, current_user.id, quota.KIND_IMAGE, pro=entitlement.pro)
         job_id = enqueue_image_job(job_data)
+        record_job_queued(db, job_id, current_user.id, JOB_TYPE_IMAGE)
 
         logger.info(
             "Image-to-text job enqueued (user ID: %s) - Job ID: %s",
-            _current_user.id,
+            current_user.id,
             job_id,
         )
 
         return JobQueuedResponse(
             message_id=job_id,
             status="queued",
-            message="Job has been queued for processing. Use GET /job/{message_id} to check status.",
+            message="Job has been queued for processing. Poll the job endpoint with the message_id to check status.",
         )
 
     except HTTPException:

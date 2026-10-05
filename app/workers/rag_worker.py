@@ -12,15 +12,21 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.config import get_settings
 from app.database import get_database_url
 from app.utils import (
     delete_temp_file,
+    get_rag_claude_response,
     get_rag_cloudmodel_response,
     get_rag_ollama_response,
     models_supported,
 )
 from app.utils.logger import logger
 from app.utils.rag_vectorstore import load_existing_vectorstore, process_new_pdf
+
+# How many chunks of the document go to the model with each question. This
+# was 100 (about 25,000 tokens a question); see docs/models.md.
+RAG_TOP_K = get_settings().rag_top_k
 
 # Database setup for worker
 # Use NullPool because each asyncio.run() creates a new event loop,
@@ -101,7 +107,7 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
             search_results = await asyncio.to_thread(
                 vectorstore.similarity_search,
                 query,
-                k=100,
+                k=RAG_TOP_K,
                 filter=filter_condition,
             )
 
@@ -115,7 +121,7 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
                 all_results = await asyncio.to_thread(
                     vectorstore.similarity_search,
                     query,
-                    k=100,
+                    k=RAG_TOP_K,
                 )
                 if all_results:
                     search_results = all_results
@@ -133,6 +139,10 @@ async def process_rag_job_async(job_data: Dict[str, Any]) -> Dict[str, Any]:
             response: str | None = None
             if model == models_supported["ollama"]:
                 response = await get_rag_ollama_response(query, relevant_context)
+            elif model == models_supported["claude"]:
+                response = await asyncio.to_thread(
+                    get_rag_claude_response, query, relevant_context
+                )
             else:
                 response = get_rag_cloudmodel_response(query, relevant_context, model)
 

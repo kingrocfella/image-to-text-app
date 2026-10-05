@@ -2,13 +2,15 @@
 
 import asyncio
 import json
-import os
 from typing import Any, Dict
 
 import dramatiq
 import redis
+from dramatiq.middleware import CurrentMessage
 
+from app.config import get_settings
 from app.database.redis import get_redis_broker, get_redis_url, get_result_backend
+from app.services.job_runs import STATUS_FAILED, STATUS_FINISHED, mark_job_done
 from app.utils.file_utils import delete_temp_file
 from app.utils.logger import logger
 from app.workers import (
@@ -37,7 +39,7 @@ JOB_TYPE_RAG = "rag"
 JOB_TYPE_SOUND = "sound"
 JOB_TYPE_IMAGE = "image"
 JOB_METADATA_KEY_PREFIX = "job:metadata:"
-JOB_TYPE_TTL = 86400 * int(os.getenv("JOB_TYPE_TTL_DAYS", "7"))
+JOB_TYPE_TTL = 86400 * get_settings().job_type_ttl_days
 DELETED_ACCOUNT_KEY_PREFIX = "account:deleted:"
 
 # Set the broker for dramatiq
@@ -58,6 +60,11 @@ def _store_job_metadata(message_id: str, job_type: str, owner_user_id: str) -> N
 def _assert_account_active(owner_user_id: str) -> None:
     if _get_redis_client().get(f"{DELETED_ACCOUNT_KEY_PREFIX}{owner_user_id}"):
         raise RuntimeError("Account is no longer active")
+
+
+def _current_message_id() -> str | None:
+    message = CurrentMessage.get_current_message()
+    return message.message_id if message else None
 
 
 def mark_account_deleted_and_purge_jobs(owner_user_id: str) -> None:
@@ -97,9 +104,11 @@ def process_rag_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         result = asyncio.run(process_rag_job_async(job_data))
         _assert_account_active(str(job_data["user_id"]))
         logger.info("RAG job completed successfully: %s", result.get("request_id"))
+        mark_job_done(_current_message_id(), STATUS_FINISHED)
         return result
     except Exception as e:
         logger.error("Error processing RAG job: %s", e, exc_info=True)
+        mark_job_done(_current_message_id(), STATUS_FAILED)
         raise
     finally:
         delete_temp_file(job_data.get("pdf_file_path"), silent=True)
@@ -127,9 +136,11 @@ def process_sound_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         result = process_sound_job_sync(job_data)
         _assert_account_active(str(job_data["user_id"]))
         logger.info("Sound-to-text job completed successfully")
+        mark_job_done(_current_message_id(), STATUS_FINISHED)
         return result
     except Exception as e:
         logger.error("Error processing sound-to-text job: %s", e, exc_info=True)
+        mark_job_done(_current_message_id(), STATUS_FAILED)
         raise
 
 
@@ -155,9 +166,11 @@ def process_image_job(job_data: Dict[str, Any]) -> Dict[str, Any]:
         result = process_image_job_sync(job_data)
         _assert_account_active(str(job_data["user_id"]))
         logger.info("Image-to-text job completed successfully")
+        mark_job_done(_current_message_id(), STATUS_FINISHED)
         return result
     except Exception as e:
         logger.error("Error processing image-to-text job: %s", e, exc_info=True)
+        mark_job_done(_current_message_id(), STATUS_FAILED)
         raise
 
 

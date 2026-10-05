@@ -68,9 +68,7 @@ async def get_current_user(
         try:
             user_id = UUID(user_id_str)
         except ValueError as exc:
-            logger.warning(
-                "Authentication failed: Invalid user ID format - %s", user_id_str
-            )
+            logger.warning("Authentication failed: Invalid user ID format")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid user ID format",
@@ -85,6 +83,18 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # A password reset invalidates every access token issued before it.
+        changed_at = user.password_changed_at
+        if changed_at is not None and int(payload.get("iat", 0)) < int(
+            changed_at.timestamp()
+        ):
+            logger.warning("Authentication failed: token predates password change")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 

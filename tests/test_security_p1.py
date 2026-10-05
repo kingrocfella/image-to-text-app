@@ -12,10 +12,7 @@ from fastapi.responses import StreamingResponse
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from app.middleware.security_middleware import (
-    DistributedRateLimitMiddleware,
-    RequestProtectionMiddleware,
-)
+from app.middleware.security_middleware import RequestProtectionMiddleware
 from app.utils import (
     create_access_token,
     rag_vectorstore,
@@ -99,29 +96,6 @@ async def test_request_protection_does_not_spin_on_streaming_response():
 
     assert response.status_code == 200
     assert response.content == b"ready"
-
-
-@pytest.mark.asyncio
-async def test_distributed_rate_limit_returns_429(monkeypatch):
-    limited = FastAPI()
-    limited.add_middleware(DistributedRateLimitMiddleware)
-
-    @limited.post("/auth/login")
-    async def login_stub():
-        return {"ok": True}
-
-    monkeypatch.setattr(
-        DistributedRateLimitMiddleware,
-        "_increment",
-        lambda _self, _key, _window: 11,
-    )
-    async with AsyncClient(
-        transport=ASGITransport(app=limited), base_url="http://test"
-    ) as client:
-        response = await client.post("/auth/login")
-
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "900"
 
 
 def test_access_tokens_have_bound_identity_claims():

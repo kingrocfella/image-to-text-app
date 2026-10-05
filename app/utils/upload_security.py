@@ -1,6 +1,5 @@
 """Bounded, content-based validation for untrusted uploads."""
 
-import os
 import warnings
 from io import BytesIO
 from pathlib import Path
@@ -10,23 +9,15 @@ from PIL import Image
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-IMAGE_MAX_BYTES = int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
-AUDIO_MAX_BYTES = int(os.getenv("AUDIO_MAX_BYTES", str(20 * 1024 * 1024)))
-PDF_MAX_BYTES = int(os.getenv("PDF_MAX_BYTES", str(20 * 1024 * 1024)))
-IMAGE_MAX_PIXELS = int(os.getenv("IMAGE_MAX_PIXELS", "40000000"))
-IMAGE_MAX_FRAMES = int(os.getenv("IMAGE_MAX_FRAMES", "20"))
-PDF_MAX_PAGES = int(os.getenv("PDF_MAX_PAGES", "100"))
+from app.config import get_settings
 
-for name, value in {
-    "IMAGE_MAX_BYTES": IMAGE_MAX_BYTES,
-    "AUDIO_MAX_BYTES": AUDIO_MAX_BYTES,
-    "PDF_MAX_BYTES": PDF_MAX_BYTES,
-    "IMAGE_MAX_PIXELS": IMAGE_MAX_PIXELS,
-    "IMAGE_MAX_FRAMES": IMAGE_MAX_FRAMES,
-    "PDF_MAX_PAGES": PDF_MAX_PAGES,
-}.items():
-    if value <= 0:
-        raise RuntimeError(f"{name} must be positive")
+_settings = get_settings()
+IMAGE_MAX_BYTES = _settings.image_max_bytes
+AUDIO_MAX_BYTES = _settings.audio_max_bytes
+PDF_MAX_BYTES = _settings.pdf_max_bytes
+IMAGE_MAX_PIXELS = _settings.image_max_pixels
+IMAGE_MAX_FRAMES = _settings.image_max_frames
+PDF_MAX_PAGES = _settings.pdf_max_pages
 
 
 async def read_upload_limited(upload: UploadFile, max_bytes: int) -> bytes:

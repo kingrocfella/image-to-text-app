@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.database import User
 from app.dependencies.dependencies import get_current_active_user
+from app.paths import Api
 from app.queues import (
     JOB_TYPE_IMAGE,
     JOB_TYPE_RAG,
@@ -24,7 +25,7 @@ router = APIRouter()
 
 
 @router.get(
-    "/job/{message_id}",
+    Api.JOB,
     status_code=status.HTTP_200_OK,
     response_model=ResponseItem
     | SoundJobResult

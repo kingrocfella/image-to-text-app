@@ -1,8 +1,6 @@
 """Authentication utilities."""
 
 import hashlib
-import hmac
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -10,58 +8,32 @@ from uuid import uuid4
 
 import bcrypt
 import jwt
-from dotenv import load_dotenv
 
-load_dotenv()
+from app.config import get_settings
+
+_settings = get_settings()
 
 # JWT settings
-_INSECURE_SECRET_VALUES = {
-    "change-me",
-    "changeme",
-    "secret-key",
-    "your-openai-pass",
-    "your-secret-key",
-}
-
-
-def _required_secret(name: str, minimum_length: int) -> str:
-    """Load a required secret and reject missing or placeholder values."""
-    value = os.getenv(name, "").strip()
-    normalized = value.lower()
-    if (
-        len(value) < minimum_length
-        or normalized in _INSECURE_SECRET_VALUES
-        or normalized.startswith(("change-me", "your-"))
-    ):
-        raise RuntimeError(
-            f"{name} must be configured with at least {minimum_length} non-placeholder characters"
-        )
-    return value
-
-
-SECRET_KEY = _required_secret("SECRET_KEY", 32)
+SECRET_KEY = _settings.secret_key
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "1"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "1"))
-JWT_ISSUER = os.getenv("JWT_ISSUER", "scangenai-api").strip()
-JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "scangenai-client").strip()
-
-if not JWT_ISSUER or not JWT_AUDIENCE:
-    raise RuntimeError("JWT_ISSUER and JWT_AUDIENCE must be configured")
-
-if os.getenv("ENVIRONMENT", "development").strip().lower() in {"prod", "production"}:
-    _required_secret("OPENAI_PASS", 16)
+ACCESS_TOKEN_EXPIRE_HOURS = _settings.access_token_expire_hours
+REFRESH_TOKEN_EXPIRE_DAYS = _settings.refresh_token_expire_days
+JWT_ISSUER = _settings.jwt_issuer
+JWT_AUDIENCE = _settings.jwt_audience
 
 
-def verify_openai_password(provided_password: str | None) -> bool:
-    """Validate the API-side OpenAI access password without leaking it to jobs."""
-    if provided_password is None:
-        return False
-    try:
-        configured_password = _required_secret("OPENAI_PASS", 16)
-    except RuntimeError:
-        return False
-    return hmac.compare_digest(provided_password, configured_password)
+def _verification_keys() -> list[str]:
+    """Keys a token may be signed with: the current one, then the previous.
+
+    `make rotate-secrets` moves the old SECRET_KEY to SECRET_KEY_PREVIOUS, which
+    is accepted for verification only, so a rotation signs nobody out. New
+    tokens are always signed with SECRET_KEY.
+    """
+    settings = get_settings()
+    keys = [settings.secret_key]
+    if settings.secret_key_previous:
+        keys.append(settings.secret_key_previous)
+    return keys
 
 
 def _password_bytes(password: str) -> bytes:
@@ -114,7 +86,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
             "type": "access",
         }
     )
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, get_settings().secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
 
@@ -133,26 +105,27 @@ def create_refresh_token(data: dict) -> str:
             "type": "refresh",
         }
     )
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, get_settings().secret_key, algorithm=ALGORITHM)
     return encoded_jwt
 
 
 def decode_token(token: str) -> Optional[dict]:
-    """Decode and verify a JWT token."""
-    try:
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM],
-            audience=JWT_AUDIENCE,
-            issuer=JWT_ISSUER,
-            options={"require": ["aud", "exp", "iat", "iss", "jti", "sub", "type"]},
-        )
-        return payload
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
+    """Decode and verify a JWT token against the current or previous key."""
+    for key in _verification_keys():
+        try:
+            return jwt.decode(
+                token,
+                key,
+                algorithms=[ALGORITHM],
+                audience=JWT_AUDIENCE,
+                issuer=JWT_ISSUER,
+                options={"require": ["aud", "exp", "iat", "iss", "jti", "sub", "type"]},
+            )
+        except jwt.InvalidSignatureError:
+            continue
+        except jwt.InvalidTokenError:
+            return None
+    return None
 
 
 def generate_verification_token() -> str:

@@ -104,3 +104,8 @@ logs/
 # never be committed. Created by scripts/backup-db.sh; retention is handled
 # there, and copies belong off-host.
 backups/
+
+# Secret-rotation lock and state (scripts/rotate-secrets.sh). The pending file
+# holds new credentials mid-rotation; neither may be committed or built in.
+.rotate-secrets/
+.secret-rotation/

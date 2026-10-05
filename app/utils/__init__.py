@@ -7,11 +7,11 @@ from app.utils.auth_utils import (
     generate_verification_token,
     get_password_hash,
     token_fingerprint,
-    verify_openai_password,
     verify_password,
 )
-from app.utils.constants import model_names, models_supported
+from app.utils.constants import models_supported
 from app.utils.file_utils import delete_temp_file
+from app.utils.rag_claude_response import get_rag_claude_response
 from app.utils.rag_cloudmodel_response import get_rag_cloudmodel_response
 from app.utils.rag_ollama_response import get_rag_ollama_response
 from app.utils.upload_security import (
@@ -35,7 +35,6 @@ __all__ = [
     "create_refresh_token",
     "decode_token",
     "generate_verification_token",
-    "verify_openai_password",
     "get_password_hash",
     "token_fingerprint",
     "verify_password",
@@ -46,8 +45,8 @@ __all__ = [
     "delete_temp_file",
     "get_rag_ollama_response",
     "get_rag_cloudmodel_response",
+    "get_rag_claude_response",
     "models_supported",
-    "model_names",
     "AUDIO_MAX_BYTES",
     "IMAGE_MAX_BYTES",
     "PDF_MAX_BYTES",

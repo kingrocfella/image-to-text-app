@@ -25,7 +25,28 @@
     "eyebrow": "Something went wrong",
     "title": "Verification is unavailable",
     "message": "We hit an unexpected problem while verifying your email. Please try the link again in a few minutes.",
-    "hint": "If the problem persists, try again later \u2014 your link stays valid until it\u2019s used.",
+    "hint": "If the problem persists, try again later \u2014 your link stays valid until it\u2019s used or expires.",
+  },
+  "expired": {
+    "tone": "error",
+    "eyebrow": "Link expired",
+    "title": "This verification link has expired",
+    "message": "Verification links stop working after a while. Open the " ~ brand_name ~ " app, try to sign in, and choose \u201cResend verification email\u201d to get a new one.",
+    "hint": "The newest email always carries the link that works.",
+  },
+  "reset_done": {
+    "tone": "success",
+    "eyebrow": "All set",
+    "title": "Your password has been changed",
+    "message": "You have been signed out everywhere. Open the " ~ brand_name ~ " app and sign in with your new password.",
+    "hint": "You can close this tab.",
+  },
+  "reset_invalid": {
+    "tone": "error",
+    "eyebrow": "Link not valid",
+    "title": "This reset link can\u2019t be used",
+    "message": "It is invalid, has expired, or has already been used. Open the " ~ brand_name ~ " app and choose \u201cForgot password?\u201d to get a new one.",
+    "hint": "Reset links work once and expire quickly, for your safety.",
   },
 } %}
 {% set s = states[state] %}

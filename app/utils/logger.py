@@ -1,4 +1,13 @@
-"""Logging configuration for the application."""
+"""Logging configuration for the application.
+
+Stdout always. With ``LOG_TO_FILE=true`` the process also writes two rotating
+files into ``LOG_DIR``: ``info.log`` (everything) and ``errors.log`` (errors
+only). In Docker ``LOG_DIR`` is the named ``app_logs`` volume, so both survive
+rebuilds. Never write logs elsewhere, and never collapse the two files.
+
+Redaction happens in the formatter, at the final sink, so exception text and
+tracebacks cannot bypass call-site discipline.
+"""
 
 import logging
 import os
@@ -7,40 +16,13 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from dotenv import load_dotenv
+from app.config import get_settings
 
-load_dotenv()
+_settings = get_settings()
+LOG_LEVEL = _settings.log_level
 
-# Get log level from environment or default to INFO
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_DIR_STR = os.getenv("LOG_DIR", "logs")
+_project_root = Path(__file__).resolve().parent.parent.parent
 
-# Determine the base directory for logs
-# Use the project root (parent of app directory) as the base, or current working directory as fallback
-_this_file = Path(__file__).resolve()
-_app_dir = _this_file.parent.parent
-_project_root = _app_dir.parent
-
-# Resolve to absolute path to ensure consistent location
-# If absolute path provided, use it; otherwise make it relative to project root
-if os.path.isabs(LOG_DIR_STR):
-    LOG_DIR = Path(LOG_DIR_STR)
-else:
-    LOG_DIR = (_project_root / LOG_DIR_STR).resolve()
-
-# Create logs directory if it doesn't exist (create parents if needed)
-try:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_FILE = LOG_DIR / "app.log"
-    ERROR_LOG_FILE = LOG_DIR / "errors.log"
-except OSError as e:
-    # If directory creation fails, log to stderr and continue with console logging only
-    print(f"Warning: Could not create log directory {LOG_DIR}: {e}", file=sys.stderr)
-    LOG_DIR = None
-    LOG_FILE = None
-    ERROR_LOG_FILE = None
-
-# Configure root logger
 logger = logging.getLogger("app")
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 # Prevent propagation to root logger to avoid duplicate logs
@@ -75,52 +57,53 @@ class SanitizingFormatter(logging.Formatter):
 if logger.handlers:
     logger.handlers.clear()
 
-# Console handler with colored output
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
-console_format = SanitizingFormatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+console_handler.setFormatter(
+    SanitizingFormatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 )
-console_handler.setFormatter(console_format)
 logger.addHandler(console_handler)
 
-# File handler for all logs (only if LOG_DIR was created successfully)
-if LOG_DIR and LOG_FILE:
+if _settings.log_to_file:
+    file_format = SanitizingFormatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    log_dir = (
+        Path(_settings.log_dir)
+        if os.path.isabs(_settings.log_dir)
+        else (_project_root / _settings.log_dir).resolve()
+    )
+    max_bytes = _settings.log_max_size_mb * 1024 * 1024
     try:
+        log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            str(LOG_FILE),
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
+            str(log_dir / "info.log"),
+            maxBytes=max_bytes,
+            backupCount=_settings.log_backup_count,
             encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
-        file_format = SanitizingFormatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
-        # Write initial log to create the file (use INFO level so it's always written)
-        logger.info("Logging initialized - log file: %s", LOG_FILE)
-    except (OSError, IOError) as e:
-        print(f"Warning: Could not create log file {LOG_FILE}: {e}", file=sys.stderr)
 
-# Error file handler for errors only (only if LOG_DIR was created successfully)
-if LOG_DIR and ERROR_LOG_FILE:
-    try:
         error_file_handler = RotatingFileHandler(
-            str(ERROR_LOG_FILE),  # Convert Path to string for compatibility
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
+            str(log_dir / "errors.log"),
+            maxBytes=max_bytes,
+            backupCount=_settings.log_backup_count,
             encoding="utf-8",
         )
         error_file_handler.setLevel(logging.ERROR)
         error_file_handler.setFormatter(file_format)
         logger.addHandler(error_file_handler)
-    except (OSError, IOError) as e:
+    except OSError as exc:
+        # Don't crash the app over logging setup; fall back to stdout only.
         print(
-            f"Warning: Could not create error log file {ERROR_LOG_FILE}: {e}",
+            f"Warning: file logging requested but unavailable ({exc}); "
+            "continuing with stdout only.",
             file=sys.stderr,
         )
 

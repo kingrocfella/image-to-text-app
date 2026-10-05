@@ -125,7 +125,7 @@ async def test_convert_image_different_formats(
             patch("app.routes.image_to_text.enqueue_image_job") as mock_enqueue,
             patch("app.routes.image_to_text.SHARED_IMAGE_DIR", tmp_path),
         ):
-            mock_enqueue.return_value = "test-job-id-456"
+            mock_enqueue.return_value = f"test-job-id-{format_name}"
 
             img = Image.new("RGB", (100, 100), color="red")
             img_bytes = BytesIO()

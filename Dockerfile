@@ -31,6 +31,10 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chown=app:app ./app ./app
+# Applied at API startup (app/database/postgres.py); the image must carry them.
+COPY --chown=app:app ./migrations ./migrations
+# Apple's public root certificate, pinned for purchase verification.
+COPY --chown=app:app ./certs ./certs
 # Each of these is a named-volume mount point in docker-compose.yml, and each is
 # created here on purpose: Docker seeds a new named volume from the image path it
 # covers, so a directory absent from the image yields a volume owned by root that
@@ -50,4 +54,4 @@ ENV HOME=/home/app \
 USER 10001:10001
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

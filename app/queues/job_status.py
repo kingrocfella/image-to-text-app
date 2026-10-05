@@ -18,6 +18,10 @@ from app.queues.job_queue import (
 )
 from app.utils.logger import logger
 
+# Exception text can carry provider responses, file paths or SQL; the client
+# gets this instead, and the detail stays in errors.log.
+JOB_ERROR_MESSAGE = "The job could not be completed. Please try again."
+
 
 class JobNotFoundError(Exception):
     """Raised when a job is absent or does not belong to the caller."""
@@ -52,14 +56,14 @@ def get_job_status(message_id: str, requesting_user_id: str) -> Dict[str, Any]:
     Automatically determines the job type and queries the appropriate actor.
     """
     try:
-        logger.info("Checking job status for message_id: %s", message_id)
+        logger.debug("Checking job status for message_id: %s", message_id)
 
         metadata = _get_job_metadata(message_id)
         if metadata is None or metadata["owner_user_id"] != requesting_user_id:
             raise JobNotFoundError("Job not found")
 
         job_type = metadata["job_type"]
-        logger.info("Job type for message_id %s: %s", message_id, job_type)
+        logger.debug("Job type for message_id %s: %s", message_id, job_type)
 
         # Select the appropriate actor based on job type
         if job_type == JOB_TYPE_SOUND:
@@ -82,14 +86,14 @@ def get_job_status(message_id: str, requesting_user_id: str) -> Dict[str, Any]:
         return {
             "message_id": message_id,
             "status": "unknown",
-            "error": str(e),
+            "error": JOB_ERROR_MESSAGE,
         }
 
 
 def _try_get_result(actor, message_id: str) -> Dict[str, Any]:
     """Try to get result from a specific actor."""
     try:
-        logger.info("Trying to get result for message_id: %s", message_id)
+        logger.debug("Trying to get result for message_id: %s", message_id)
         message = actor.message_with_options(args=({},)).copy(message_id=message_id)
 
         try:
@@ -101,7 +105,7 @@ def _try_get_result(actor, message_id: str) -> Dict[str, Any]:
                 "result": result,
             }
         except ResultMissing:
-            logger.info("Result not yet available for message_id: %s", message_id)
+            logger.debug("Result not yet available for message_id: %s", message_id)
             return {
                 "message_id": message_id,
                 "status": "pending",
@@ -119,12 +123,12 @@ def _try_get_result(actor, message_id: str) -> Dict[str, Any]:
             return {
                 "message_id": message_id,
                 "status": "failed",
-                "error": str(e),
+                "error": JOB_ERROR_MESSAGE,
             }
     except Exception as e:
         logger.error("Error in _try_get_result: %s", e, exc_info=True)
         return {
             "message_id": message_id,
             "status": "unknown",
-            "error": str(e),
+            "error": JOB_ERROR_MESSAGE,
         }
